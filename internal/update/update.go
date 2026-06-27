@@ -282,16 +282,25 @@ func (a *Applier) CleanupLeftovers() int {
 	if err := os.Remove(target + backupSuffix); err == nil {
 		removed++
 	}
-	// Glob is scoped to the executable's own directory and the wisp-specific temp
-	// pattern, so it can only ever match files this updater created.
-	matches, _ := filepath.Glob(filepath.Join(filepath.Dir(target), tempPattern))
-	for _, m := range matches {
-		// Skip files young enough to be a download still in progress (possibly by
-		// a concurrent process); they'll be reaped on a later launch if orphaned.
-		if info, err := os.Stat(m); err != nil || time.Since(info.ModTime()) < tempStaleAfter {
+	// Reap orphaned temp files in the executable's own directory. We scan with
+	// os.ReadDir + a literal prefix match rather than filepath.Glob: an install
+	// path containing glob metacharacters (e.g. "/opt/app[1]/") would make Glob
+	// misread the directory itself and match nothing. Info() also reuses the
+	// dirent, sparing a redundant os.Stat per entry.
+	dir := filepath.Dir(target)
+	tempPrefix := strings.TrimSuffix(tempPattern, "*")
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), tempPrefix) {
 			continue
 		}
-		if err := os.Remove(m); err == nil {
+		// Skip files young enough to be a download still in progress (possibly by
+		// a concurrent process); they'll be reaped on a later launch if orphaned.
+		info, err := e.Info()
+		if err != nil || time.Since(info.ModTime()) < tempStaleAfter {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err == nil {
 			removed++
 		}
 	}

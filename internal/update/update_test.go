@@ -268,6 +268,29 @@ func TestCleanupLeftovers(t *testing.T) {
 	mustGone(t, staleB)
 }
 
+// TestCleanupLeftoversGlobMetacharDir guards the os.ReadDir approach: an install
+// directory whose name contains glob metacharacters must not defeat cleanup.
+// filepath.Glob would read "[1]" as a character class and match nothing here.
+func TestCleanupLeftoversGlobMetacharDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "app[1]")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "wisp")
+	mustWrite(t, target, "current binary")
+	mustWrite(t, target+".old", "previous binary")
+	stale := filepath.Join(dir, ".wisp-update-orphan")
+	mustWriteOld(t, stale, "x")
+
+	a := &Applier{TargetPath: target}
+	if got := a.CleanupLeftovers(); got != 2 {
+		t.Fatalf("removed %d files, want 2 (.old + 1 stale temp) in a bracketed dir", got)
+	}
+	mustExist(t, target)
+	mustGone(t, target+".old")
+	mustGone(t, stale)
+}
+
 func TestCleanupLeftoversNothingToDo(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "wisp")
