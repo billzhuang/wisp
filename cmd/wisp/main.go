@@ -49,8 +49,12 @@ func run(args []string) error {
 
 	// Reclaim any update artifacts (the previous ".old" binary, interrupted
 	// download temp files) left next to our executable, so repeated self-updates
-	// don't accumulate disk. Best-effort: never blocks or fails the launch.
-	(&update.Applier{Prefix: assetFlavor}).CleanupLeftovers()
+	// don't accumulate disk. Best-effort: never blocks or fails the launch. The
+	// scan is a couple of file ops on our own install dir — dwarfed by the tsnet
+	// bring-up and SSH dial that follow — so it stays on the synchronous path.
+	if n := (&update.Applier{Prefix: assetFlavor}).CleanupLeftovers(); n > 0 {
+		fmt.Fprintf(os.Stderr, "wisp: reclaimed %d leftover update file(s)\n", n)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
