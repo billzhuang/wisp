@@ -91,10 +91,28 @@ SHA-256 against the release's checksums file, and atomically replaces the
 binary; you restart wisp to run the new version.
 
 This is driven by [`.github/workflows/release.yml`](.github/workflows/release.yml):
-pushing a `vX.Y.Z` tag builds the per-platform binaries (`wisp_<os>_<arch>`) and
-a `checksums.txt`, and publishes them as a Release. The version is stamped into
-the binary at link time, and `internal/update` reads exactly those asset names —
-so a tagged release becomes a one-click upgrade for every user.
+pushing a `vX.Y.Z` tag builds the binaries and a `checksums.txt` and publishes
+them as a Release. The version is stamped into the binary at link time, and
+`internal/update` reads exactly those asset names — so a tagged release becomes
+a one-click upgrade for every user.
+
+### Release target & flavors
+
+The product targets **Apple Silicon macOS** (M-series). The GUI build uses
+Ebitengine, which needs cgo + the macOS frameworks and therefore builds on a
+native Apple-Silicon runner (cgo GUI binaries can't be cross-compiled — that's
+why the headless CLI build, being pure Go, cross-compiles from any runner while
+the GUI does not). Two flavors are published, and **each self-updates to its own
+asset** (see `cmd/wisp/flavor_*.go`):
+
+| Asset | Flavor | Build |
+|---|---|---|
+| `wisp-gui_darwin_arm64` | GPU terminal app (primary) | `-tags ebiten`, cgo |
+| `wisp_darwin_arm64` | headless stdio/CLI | pure Go |
+
+CI additionally builds + tests the GUI on Linux (under `xvfb`) as a fast,
+display-independent smoke net, and compile-checks the GUI on macOS Apple Silicon
+(the release target).
 
 ## Building & testing
 

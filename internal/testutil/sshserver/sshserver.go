@@ -39,6 +39,8 @@ type Server struct {
 	mu       sync.Mutex
 	resizes  []PTYRequest // window-change events observed, for assertions
 	password string
+	conns    []net.Conn // accepted connections, closed proactively on Close
+	closing  bool
 }
 
 // Option configures the server.
@@ -100,9 +102,20 @@ func (s *Server) Resizes() []PTYRequest {
 	return out
 }
 
-// Close stops the server and waits for in-flight connections to drain.
+// Close stops the server and waits for in-flight connections to drain. It
+// proactively closes accepted connections so it never depends on the client
+// disconnecting first — a test that forgets to close its client still shuts
+// down cleanly rather than hanging.
 func (s *Server) Close() error {
 	err := s.ln.Close()
+	s.mu.Lock()
+	s.closing = true
+	conns := s.conns
+	s.conns = nil
+	s.mu.Unlock()
+	for _, c := range conns {
+		c.Close()
+	}
 	s.wg.Wait()
 	return err
 }
@@ -124,6 +137,15 @@ func (s *Server) serve() {
 
 func (s *Server) handleConn(nc net.Conn) {
 	defer nc.Close()
+	// Track the connection so Close can tear it down proactively.
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return
+	}
+	s.conns = append(s.conns, nc)
+	s.mu.Unlock()
+
 	conn, chans, reqs, err := ssh.NewServerConn(nc, s.cfg)
 	if err != nil {
 		return

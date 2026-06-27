@@ -116,7 +116,7 @@ func run(args []string) error {
 		if p, ok := frontend.(render.UpdatePrompter); ok {
 			rel := pendingUpdate
 			p.SetUpdate(fmt.Sprintf("Update %s available — press Ctrl+U to install", rel.Version()),
-				func() error { return (&update.Applier{}).Apply(context.Background(), rel) })
+				func() error { return (&update.Applier{Prefix: assetFlavor}).Apply(context.Background(), rel) })
 		}
 	}
 
@@ -191,7 +191,7 @@ func runUpdate(ctx context.Context) error {
 		return nil
 	}
 	fmt.Printf("Updating wisp %s -> %s ...\n", version.Current(), rel.Version())
-	applier := &update.Applier{}
+	applier := &update.Applier{Prefix: assetFlavor}
 	if err := applier.Apply(ctx, rel); err != nil {
 		return fmt.Errorf("installing update: %w", err)
 	}

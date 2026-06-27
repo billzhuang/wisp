@@ -154,6 +154,83 @@ func TestApplyChecksumMismatch(t *testing.T) {
 	}
 }
 
+func TestAssetNameFlavorAndOS(t *testing.T) {
+	cases := []struct {
+		prefix, os, arch, want string
+	}{
+		{"", "linux", "amd64", "wisp_linux_amd64"},
+		{"wisp", "darwin", "arm64", "wisp_darwin_arm64"},
+		{"wisp-gui", "darwin", "arm64", "wisp-gui_darwin_arm64"},
+		{"wisp", "windows", "amd64", "wisp_windows_amd64.exe"},
+		{"wisp-gui", "windows", "arm64", "wisp-gui_windows_arm64.exe"},
+	}
+	for _, c := range cases {
+		a := &Applier{Prefix: c.prefix, OS: c.os, Arch: c.arch}
+		if got := a.AssetName(); got != c.want {
+			t.Errorf("AssetName(prefix=%q,%s/%s) = %q, want %q", c.prefix, c.os, c.arch, got, c.want)
+		}
+	}
+}
+
+func TestApplyMissingAssetForPlatform(t *testing.T) {
+	srv, _ := fakeGitHub(t, "v1.2.0", []byte("bin"))
+	c := &Checker{Repo: "owner/repo", Current: "1.0.0", BaseURL: srv.URL}
+	rel, _, err := c.CheckForUpdate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fake release only has wisp_testos_testarch; ask for a different arch.
+	a := &Applier{OS: "otheros", Arch: "otherarch"}
+	err = a.Apply(context.Background(), rel)
+	if err == nil {
+		t.Fatal("expected error for missing platform asset")
+	}
+}
+
+func TestApplyMissingChecksums(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "wisp")
+	os.WriteFile(target, []byte("old"), 0o755)
+	rel := &Release{
+		Tag:    "v1.0.0",
+		Assets: []Asset{{Name: "wisp_testos_testarch", URL: "http://example.invalid/bin"}},
+	}
+	a := &Applier{TargetPath: target, OS: "testos", Arch: "testarch"}
+	if err := a.Apply(context.Background(), rel); err == nil {
+		t.Fatal("expected error when no checksums asset is present")
+	}
+}
+
+func TestCheckForUpdatePropagatesError(t *testing.T) {
+	c := &Checker{Repo: "owner/repo", Current: "1.0.0", BaseURL: "http://127.0.0.1:0"}
+	if _, _, err := c.CheckForUpdate(context.Background()); err == nil {
+		t.Fatal("expected error from unreachable base URL")
+	}
+}
+
+func TestLatestRequiresRepo(t *testing.T) {
+	c := &Checker{Current: "1.0.0"}
+	if _, err := c.Latest(context.Background()); err == nil {
+		t.Fatal("expected error when repo is empty")
+	}
+}
+
+func TestFindChecksumsVariants(t *testing.T) {
+	assets := []Asset{
+		{Name: "wisp_linux_amd64"},
+		{Name: "wisp_1.0.0_checksums.txt"},
+	}
+	if findChecksums(assets) == nil {
+		t.Fatal("should find *_checksums.txt")
+	}
+	assets[1].Name = "wisp.sha256"
+	if findChecksums(assets) == nil {
+		t.Fatal("should find *.sha256")
+	}
+	if findChecksums([]Asset{{Name: "wisp_linux_amd64"}}) != nil {
+		t.Fatal("should not find a checksums asset when none present")
+	}
+}
+
 func TestParseChecksums(t *testing.T) {
 	in := "abc123  wisp_linux_amd64\ndef456 *wisp_darwin_arm64\ngarbage\n"
 	m := parseChecksums(in)

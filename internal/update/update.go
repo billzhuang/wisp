@@ -119,6 +119,10 @@ type Applier struct {
 	TargetPath string
 	// OS, Arch select the asset; default to runtime.GOOS/GOARCH.
 	OS, Arch string
+	// Prefix is the asset-name prefix identifying the build flavor, e.g.
+	// "wisp" for the CLI build or "wisp-gui" for the Ebitengine build, so each
+	// flavor self-updates to the matching artifact. Defaults to "wisp".
+	Prefix string
 }
 
 func (a *Applier) client() *http.Client {
@@ -142,10 +146,17 @@ func (a *Applier) goarch() string {
 	return runtime.GOARCH
 }
 
+func (a *Applier) prefix() string {
+	if a.Prefix != "" {
+		return a.Prefix
+	}
+	return "wisp"
+}
+
 // AssetName is the per-platform binary asset name the CD pipeline publishes,
-// e.g. "wisp_linux_amd64" (with ".exe" on Windows).
+// e.g. "wisp_linux_amd64" or "wisp-gui_darwin_arm64" (with ".exe" on Windows).
 func (a *Applier) AssetName() string {
-	name := fmt.Sprintf("wisp_%s_%s", a.goos(), a.goarch())
+	name := fmt.Sprintf("%s_%s_%s", a.prefix(), a.goos(), a.goarch())
 	if a.goos() == "windows" {
 		name += ".exe"
 	}
