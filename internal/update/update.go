@@ -7,6 +7,10 @@
 //     against the release's checksums file, and atomically replaces the running
 //     executable. The user restarts to run the new version.
 //
+// Applier.CleanupLeftovers complements Apply: run once at startup, it reclaims
+// the previous binary and any interrupted-download temp files so successive
+// updates don't accumulate disk.
+//
 // Both halves take their HTTP client and endpoints as fields so the whole flow
 // is exercised against an httptest server in tests — no real network or GitHub
 // account needed.
@@ -45,6 +49,15 @@ type Asset struct {
 	URL  string `json:"browser_download_url"`
 	Size int64  `json:"size"`
 }
+
+const (
+	// tempPattern is the os.CreateTemp pattern for the in-progress download. The
+	// trailing "*" is where CreateTemp inserts random characters, and it doubles
+	// as the glob CleanupLeftovers uses to reclaim interrupted downloads.
+	tempPattern = ".wisp-update-*"
+	// backupSuffix names the previous binary moved aside during the atomic swap.
+	backupSuffix = ".old"
+)
 
 // Checker queries GitHub for the latest release.
 type Checker struct {
@@ -200,7 +213,7 @@ func (a *Applier) Apply(ctx context.Context, rel *Release) error {
 	// Download the new binary to a temp file in the target directory so the
 	// final rename is atomic (same filesystem).
 	dir := filepath.Dir(target)
-	tmp, err := os.CreateTemp(dir, ".wisp-update-*")
+	tmp, err := os.CreateTemp(dir, tempPattern)
 	if err != nil {
 		return fmt.Errorf("update: creating temp file: %w", err)
 	}
@@ -223,8 +236,9 @@ func (a *Applier) Apply(ctx context.Context, rel *Release) error {
 	// (rather than overwriting it directly) is the portable pattern: on Windows
 	// the live executable is locked and cannot be overwritten, but it *can* be
 	// renamed. On Unix this is equivalent to an atomic swap. The .old file is
-	// cleaned up best-effort and otherwise removed on the next launch.
-	backup := target + ".old"
+	// removed best-effort below; when that fails (Windows keeps the still-running
+	// old binary locked) CleanupLeftovers reclaims it on the next launch.
+	backup := target + backupSuffix
 	_ = os.Remove(backup) // clear any stale backup
 	if err := os.Rename(target, backup); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("update: moving current binary aside: %w", err)
@@ -236,6 +250,40 @@ func (a *Applier) Apply(ctx context.Context, rel *Release) error {
 	}
 	_ = os.Remove(backup) // best-effort; on Windows may be locked until restart
 	return nil
+}
+
+// CleanupLeftovers reclaims update artifacts left next to the target executable
+// so repeated updates don't accumulate disk. It removes two kinds of file:
+//
+//   - "<target>.old": the previous binary moved aside during the atomic swap.
+//     On Unix Apply removes it immediately, but on Windows the still-running old
+//     process keeps it locked, so it can only be deleted once that process has
+//     exited — i.e. on the next launch, which is what this does.
+//   - ".wisp-update-*": a partially downloaded binary from an update that was
+//     interrupted (crash, power loss, SIGKILL) before the atomic rename, whose
+//     deferred cleanup therefore never ran.
+//
+// It is best-effort: it never returns an error and ignores files it cannot
+// remove, so a launch is never blocked by cleanup. It returns the number of
+// files removed (handy for logging and tests). Call it once at startup.
+func (a *Applier) CleanupLeftovers() int {
+	target, err := a.targetPath()
+	if err != nil {
+		return 0
+	}
+	removed := 0
+	if err := os.Remove(target + backupSuffix); err == nil {
+		removed++
+	}
+	// Glob is scoped to the executable's own directory and the wisp-specific temp
+	// pattern, so it can only ever match files this updater created.
+	matches, _ := filepath.Glob(filepath.Join(filepath.Dir(target), tempPattern))
+	for _, m := range matches {
+		if err := os.Remove(m); err == nil {
+			removed++
+		}
+	}
+	return removed
 }
 
 func (a *Applier) download(ctx context.Context, url string, w io.Writer) (string, error) {

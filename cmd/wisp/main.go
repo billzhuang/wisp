@@ -47,6 +47,11 @@ func run(args []string) error {
 		return err
 	}
 
+	// Reclaim any update artifacts (the previous ".old" binary, interrupted
+	// download temp files) left next to our executable, so repeated self-updates
+	// don't accumulate disk. Best-effort: never blocks or fails the launch.
+	(&update.Applier{Prefix: assetFlavor}).CleanupLeftovers()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
