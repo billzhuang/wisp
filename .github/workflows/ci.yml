@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 jobs:
@@ -35,7 +35,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgl1-mesa-dev libxrandr-dev libxcursor-dev libxinerama-dev libxi-dev xvfb
+            libgl1-mesa-dev libxrandr-dev libxcursor-dev libxinerama-dev \
+            libxi-dev libxxf86vm-dev xvfb
       - name: Build GUI
         env:
           CGO_ENABLED: "1"

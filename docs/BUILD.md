@@ -67,7 +67,7 @@ development headers at build time.
 ```sh
 # Linux (Debian/Ubuntu):
 sudo apt-get install -y \
-  libgl1-mesa-dev libxrandr-dev libxcursor-dev libxinerama-dev libxi-dev
+  libgl1-mesa-dev libxrandr-dev libxcursor-dev libxinerama-dev libxi-dev libxxf86vm-dev
 
 go build -tags ebiten ./...
 ```
