@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // fakeGitHub serves a release, a per-platform binary asset, and a checksums
@@ -240,24 +241,31 @@ func TestCleanupLeftovers(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "wisp")
 	mustWrite(t, target, "current binary")
-	mustWrite(t, target+".old", "previous binary")            // Windows-style leftover
-	mustWrite(t, filepath.Join(dir, ".wisp-update-abc"), "x") // interrupted download
-	mustWrite(t, filepath.Join(dir, ".wisp-update-xyz"), "y") // interrupted download
-	// Files that must survive: the live binary and anything not ours.
+	mustWrite(t, target+".old", "previous binary") // Windows-style leftover
+	// Orphaned downloads: old enough to be past the in-flight grace window.
+	staleA := filepath.Join(dir, ".wisp-update-abc")
+	staleB := filepath.Join(dir, ".wisp-update-xyz")
+	mustWriteOld(t, staleA, "x")
+	mustWriteOld(t, staleB, "y")
+	// Files that must survive: the live binary, anything not ours, and a temp
+	// file recent enough to be a download still in progress.
 	mustWrite(t, filepath.Join(dir, "notes.txt"), "keep me")
 	mustWrite(t, filepath.Join(dir, "wisp.cfg"), "keep me too")
+	fresh := filepath.Join(dir, ".wisp-update-inflight")
+	mustWrite(t, fresh, "downloading")
 
 	a := &Applier{TargetPath: target}
 	if got := a.CleanupLeftovers(); got != 3 {
-		t.Fatalf("removed %d files, want 3 (.old + 2 temp)", got)
+		t.Fatalf("removed %d files, want 3 (.old + 2 stale temp)", got)
 	}
 
 	mustExist(t, target)
 	mustExist(t, filepath.Join(dir, "notes.txt"))
 	mustExist(t, filepath.Join(dir, "wisp.cfg"))
+	mustExist(t, fresh) // in-flight download must not be swept
 	mustGone(t, target+".old")
-	mustGone(t, filepath.Join(dir, ".wisp-update-abc"))
-	mustGone(t, filepath.Join(dir, ".wisp-update-xyz"))
+	mustGone(t, staleA)
+	mustGone(t, staleB)
 }
 
 func TestCleanupLeftoversNothingToDo(t *testing.T) {
@@ -297,6 +305,17 @@ func TestApplyLeavesNoLeftovers(t *testing.T) {
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// mustWriteOld writes a file and backdates it well past tempStaleAfter so
+// CleanupLeftovers treats it as an orphaned (not in-flight) download.
+func mustWriteOld(t *testing.T, path, content string) {
+	t.Helper()
+	mustWrite(t, path, content)
+	old := time.Now().Add(-2 * tempStaleAfter)
+	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatal(err)
 	}
 }

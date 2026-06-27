@@ -57,6 +57,11 @@ const (
 	tempPattern = ".wisp-update-*"
 	// backupSuffix names the previous binary moved aside during the atomic swap.
 	backupSuffix = ".old"
+	// tempStaleAfter is how old a temp file must be before CleanupLeftovers
+	// reclaims it. A live download is recent; only files left by an interrupted
+	// one are this old. The grace window keeps a concurrent in-flight update
+	// (its temp file matches the same glob) from being swept out from under it.
+	tempStaleAfter = time.Hour
 )
 
 // Checker queries GitHub for the latest release.
@@ -259,9 +264,11 @@ func (a *Applier) Apply(ctx context.Context, rel *Release) error {
 //     On Unix Apply removes it immediately, but on Windows the still-running old
 //     process keeps it locked, so it can only be deleted once that process has
 //     exited — i.e. on the next launch, which is what this does.
-//   - ".wisp-update-*": a partially downloaded binary from an update that was
-//     interrupted (crash, power loss, SIGKILL) before the atomic rename, whose
-//     deferred cleanup therefore never ran.
+//   - ".wisp-update-*" older than tempStaleAfter: a partially downloaded binary
+//     from an update that was interrupted (crash, power loss, SIGKILL) before the
+//     atomic rename, whose deferred cleanup therefore never ran. Recent temp
+//     files are left alone so a concurrent in-flight download isn't deleted out
+//     from under the process writing it.
 //
 // It is best-effort: it never returns an error and ignores files it cannot
 // remove, so a launch is never blocked by cleanup. It returns the number of
@@ -279,6 +286,11 @@ func (a *Applier) CleanupLeftovers() int {
 	// pattern, so it can only ever match files this updater created.
 	matches, _ := filepath.Glob(filepath.Join(filepath.Dir(target), tempPattern))
 	for _, m := range matches {
+		// Skip files young enough to be a download still in progress (possibly by
+		// a concurrent process); they'll be reaped on a later launch if orphaned.
+		if info, err := os.Stat(m); err != nil || time.Since(info.ModTime()) < tempStaleAfter {
+			continue
+		}
 		if err := os.Remove(m); err == nil {
 			removed++
 		}
