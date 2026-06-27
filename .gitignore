@@ -1,0 +1,12 @@
+# Build output
+/wisp
+/dist/
+*.exe
+
+# tsnet node state (never commit node identity/keys)
+*.state
+/state/
+
+# Local editor / OS cruft
+.DS_Store
+*.swp
