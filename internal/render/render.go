@@ -33,6 +33,15 @@ type Frontend interface {
 	Run(ctx context.Context, ctrl Controller, eng terminal.Engine) error
 }
 
+// UpdatePrompter is an optional capability: a frontend that can surface an
+// in-app "update available, click to install" prompt (the Ghostty-style
+// affordance). The GUI frontend implements it; the stdio frontend does not, so
+// callers must type-assert. install is invoked when the user accepts; it
+// downloads, verifies and replaces the binary, and returns any error to show.
+type UpdatePrompter interface {
+	SetUpdate(notice string, install func() error)
+}
+
 // Headless is a renderer-free Frontend: it pumps remote output into the engine
 // and blocks until the stream ends or ctx is cancelled. It draws nothing, which
 // makes it ideal for tests and for validating the network→engine seam (Phase 1

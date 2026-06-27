@@ -16,6 +16,7 @@ package render
 import (
 	"context"
 	"image/color"
+	"sync"
 
 	"github.com/billzhuang/wisp/internal/terminal"
 	"github.com/hajimehoshi/ebiten/v2"
@@ -38,6 +39,20 @@ type ebitenFrontend struct {
 	face *text.GoXFace
 	cols int
 	rows int
+
+	mu       sync.Mutex
+	banner   string       // update notice; empty hides the banner
+	install  func() error // click-to-install action
+	updating bool         // an install is in flight
+}
+
+// SetUpdate implements render.UpdatePrompter: it shows a top banner offering
+// the update and arms Ctrl+U to install it.
+func (f *ebitenFrontend) SetUpdate(notice string, install func() error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.banner = notice
+	f.install = install
 }
 
 func (f *ebitenFrontend) Run(ctx context.Context, ctrl Controller, eng terminal.Engine) error {
@@ -69,6 +84,13 @@ func (f *ebitenFrontend) Run(ctx context.Context, ctrl Controller, eng terminal.
 
 // Update forwards input and propagates window resizes to the engine + remote.
 func (f *ebitenFrontend) Update() error {
+	// Ctrl+U installs a pending update (the click-to-install gesture).
+	if inpututil.IsKeyJustPressed(ebiten.KeyU) &&
+		(ebiten.IsKeyPressed(ebiten.KeyControlLeft) || ebiten.IsKeyPressed(ebiten.KeyControlRight)) {
+		f.triggerInstall()
+		return nil // swallow the chord; don't forward ^U to the remote
+	}
+
 	// Printable characters typed this frame.
 	if chars := ebiten.AppendInputChars(nil); len(chars) > 0 {
 		f.ctrl.Input([]byte(string(chars)))
@@ -106,6 +128,33 @@ func repeatKey(k ebiten.Key) bool {
 	return d == 1 || (d > 20 && d%3 == 0)
 }
 
+// triggerInstall runs the armed install action once, in the background, and
+// reflects progress in the banner.
+func (f *ebitenFrontend) triggerInstall() {
+	f.mu.Lock()
+	if f.install == nil || f.updating {
+		f.mu.Unlock()
+		return
+	}
+	install := f.install
+	f.updating = true
+	f.banner = "Installing update…"
+	f.mu.Unlock()
+
+	go func() {
+		err := install()
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.updating = false
+		if err != nil {
+			f.banner = "Update failed: " + err.Error()
+			return
+		}
+		f.banner = "Update installed — restart wisp to apply"
+		f.install = nil
+	}()
+}
+
 func (f *ebitenFrontend) Draw(screen *ebiten.Image) {
 	g := f.eng.Snapshot()
 	screen.Fill(color.Black)
@@ -125,6 +174,25 @@ func (f *ebitenFrontend) Draw(screen *ebiten.Image) {
 			text.Draw(screen, string(c.Rune), f.face, op)
 		}
 	}
+	f.drawBanner(screen)
+}
+
+// drawBanner overlays the update notice along the top of the window.
+func (f *ebitenFrontend) drawBanner(screen *ebiten.Image) {
+	f.mu.Lock()
+	msg := f.banner
+	f.mu.Unlock()
+	if msg == "" {
+		return
+	}
+	w := screen.Bounds().Dx()
+	bar := ebiten.NewImage(w, cellH+4)
+	bar.Fill(color.RGBA{0x1e, 0x40, 0xff, 0xff}) // blue bar
+	screen.DrawImage(bar, &ebiten.DrawImageOptions{})
+	op := &text.DrawOptions{}
+	op.GeoM.Translate(4, 2)
+	op.ColorScale.ScaleWithColor(color.White)
+	text.Draw(screen, msg, f.face, op)
 }
 
 func (f *ebitenFrontend) Layout(outsideW, outsideH int) (int, int) {

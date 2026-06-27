@@ -1,0 +1,75 @@
+name: release
+
+# Continuous delivery: pushing a semver tag (e.g. v1.2.3) builds the
+# per-platform wisp binaries and a checksums file and publishes them as a GitHub
+# Release. The in-app updater (internal/update) reads exactly these asset names
+# (wisp_<os>_<arch>) and verifies them against the checksums file, so a tagged
+# release becomes a one-click ("press Ctrl+U" / `wisp -update`) upgrade.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # required to create the release and upload assets
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0" # default (stdio) build is pure Go — cross-compiles cleanly
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          out="wisp_${GOOS}_${GOARCH}"
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/billzhuang/wisp/internal/version.Version=${version}" \
+            -o "${out}" ./cmd/wisp
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wisp_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: wisp_${{ matrix.goos }}_${{ matrix.goarch }}
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sha256sum wisp_* > "wisp_${version}_checksums.txt"
+          cat "wisp_${version}_checksums.txt"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

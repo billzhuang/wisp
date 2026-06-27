@@ -16,12 +16,16 @@ import (
 	"os/signal"
 	"syscall"
 
+	"time"
+
 	"github.com/billzhuang/wisp/internal/app"
 	"github.com/billzhuang/wisp/internal/config"
 	"github.com/billzhuang/wisp/internal/render"
 	"github.com/billzhuang/wisp/internal/sshx"
 	"github.com/billzhuang/wisp/internal/terminal"
 	"github.com/billzhuang/wisp/internal/transport"
+	"github.com/billzhuang/wisp/internal/update"
+	"github.com/billzhuang/wisp/internal/version"
 	"golang.org/x/crypto/ssh"
 	xterm "golang.org/x/term"
 )
@@ -41,12 +45,31 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Action flags that run without connecting.
+	if cfg.ShowVersion {
+		fmt.Printf("wisp %s (engine: %s)\n", version.Current(), terminal.Backend)
+		return nil
+	}
+	if cfg.DoUpdate {
+		return runUpdate(ctx)
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	var pendingUpdate *update.Release
+	if !cfg.NoUpdateCheck {
+		pendingUpdate = checkForUpdate(ctx)
+		if pendingUpdate != nil {
+			fmt.Fprintf(os.Stderr, "wisp: update available %s -> %s (run `wisp -update`)\n",
+				version.Current(), pendingUpdate.Version())
+		}
+	}
 
 	dialer, err := buildDialer(ctx, cfg)
 	if err != nil {
@@ -85,6 +108,18 @@ func run(args []string) error {
 
 	eng := terminal.DefaultEngine(80, 24)
 	frontend := render.NewDefault()
+
+	// If a newer release is pending and the frontend can show an in-app prompt
+	// (the GUI), wire the click-to-install action — this is the Ghostty-style
+	// "update available, click to install" affordance.
+	if pendingUpdate != nil {
+		if p, ok := frontend.(render.UpdatePrompter); ok {
+			rel := pendingUpdate
+			p.SetUpdate(fmt.Sprintf("Update %s available — press Ctrl+U to install", rel.Version()),
+				func() error { return (&update.Applier{}).Apply(context.Background(), rel) })
+		}
+	}
+
 	fmt.Fprintf(os.Stderr, "wisp: connected to %s (engine: %s)\n", cfg.Addr(), terminal.Backend)
 	return frontend.Run(ctx, ctrl, eng)
 }
@@ -141,4 +176,45 @@ func buildAuth(cfg *config.Config) ([]ssh.AuthMethod, error) {
 		fmt.Fprintln(os.Stderr)
 		return string(pw), err
 	})}, nil
+}
+
+// runUpdate performs the click-to-install flow (here, the CLI form): check for a
+// newer release and, if found, download + verify + replace the binary in place.
+func runUpdate(ctx context.Context) error {
+	checker := &update.Checker{Repo: version.Repo, Current: version.Current()}
+	rel, newer, err := checker.CheckForUpdate(ctx)
+	if err != nil {
+		return fmt.Errorf("checking for updates: %w", err)
+	}
+	if !newer {
+		fmt.Printf("wisp %s is the latest version.\n", version.Current())
+		return nil
+	}
+	fmt.Printf("Updating wisp %s -> %s ...\n", version.Current(), rel.Version())
+	applier := &update.Applier{}
+	if err := applier.Apply(ctx, rel); err != nil {
+		return fmt.Errorf("installing update: %w", err)
+	}
+	fmt.Printf("Updated to %s. Restart wisp to run the new version.\n", rel.Version())
+	if rel.HTMLURL != "" {
+		fmt.Printf("Release notes: %s\n", rel.HTMLURL)
+	}
+	return nil
+}
+
+// checkForUpdate does a quick, best-effort check and returns the newer release
+// if one exists. It never blocks startup for more than a couple of seconds and
+// never fails the launch (errors and dev builds yield nil).
+func checkForUpdate(ctx context.Context) *update.Release {
+	if version.IsDev() {
+		return nil // local builds have no meaningful "latest" to compare against
+	}
+	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	checker := &update.Checker{Repo: version.Repo, Current: version.Current()}
+	rel, newer, err := checker.CheckForUpdate(cctx)
+	if err != nil || !newer {
+		return nil
+	}
+	return rel
 }

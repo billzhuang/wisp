@@ -72,6 +72,30 @@ Run `wisp -h` for the full flag list. Host keys are verified against
 `~/.config/wisp/known_hosts` (trust-on-first-use; a *changed* key is always
 rejected as a possible MITM).
 
+## Auto-update
+
+wisp updates itself from GitHub Releases, Ghostty-style — no package manager
+required:
+
+```sh
+wisp -version          # print the running build
+wisp -update           # check, download, verify, and install a newer release
+wisp -no-update-check  # skip the startup "update available" notice
+```
+
+On startup a released build does a quick (≤2s, best-effort) check and prints a
+one-line notice if a newer version exists. In the GUI frontend the notice
+appears as a top banner; **press Ctrl+U to install** without leaving the
+session. The updater downloads the asset for the running OS/arch, verifies its
+SHA-256 against the release's checksums file, and atomically replaces the
+binary; you restart wisp to run the new version.
+
+This is driven by [`.github/workflows/release.yml`](.github/workflows/release.yml):
+pushing a `vX.Y.Z` tag builds the per-platform binaries (`wisp_<os>_<arch>`) and
+a `checksums.txt`, and publishes them as a Release. The version is stamped into
+the binary at link time, and `internal/update` reads exactly those asset names —
+so a tagged release becomes a one-click upgrade for every user.
+
 ## Building & testing
 
 ```sh
@@ -108,6 +132,9 @@ internal/terminal/palette ANSI/256/truecolour mapping
 internal/render/         Frontend: stdio + Ebitengine + headless
 internal/app/            Controller wiring SSH ↔ frontend
 internal/config/         flags + env → validated Config
+internal/update/         GitHub Releases self-update (check, verify, replace)
+internal/version/        build version (ldflags-injected by CD)
 internal/testutil/sshserver in-process SSH server for tests
+.github/workflows/       ci (build/test/vet) + release (tag → binaries + checksums)
 docs/BUILD.md            libghostty (Zig) + Ebitengine toolchain notes
 ```

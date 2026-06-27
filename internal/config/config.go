@@ -44,6 +44,13 @@ type Config struct {
 
 	// IdentityFile is an optional private key for public-key auth.
 	IdentityFile string
+
+	// ShowVersion prints the version and exits.
+	ShowVersion bool
+	// DoUpdate checks for and installs a newer release, then exits.
+	DoUpdate bool
+	// NoUpdateCheck disables the best-effort update notice on startup.
+	NoUpdateCheck bool
 }
 
 // Addr returns Host with a default :22 port appended if none was given.
@@ -106,6 +113,10 @@ func Parse(args []string, getenv func(string) string) (*Config, error) {
 	fs.StringVar(&c.KnownHosts, "known-hosts", defKnown, "path to known_hosts for host-key verification")
 	fs.BoolVar(&c.InsecureHostKey, "insecure-host-key", false, "skip host-key verification (testing only)")
 	fs.StringVar(&c.IdentityFile, "i", "", "private key file for public-key auth")
+
+	fs.BoolVar(&c.ShowVersion, "version", false, "print version and exit")
+	fs.BoolVar(&c.DoUpdate, "update", false, "check for and install a newer release, then exit")
+	fs.BoolVar(&c.NoUpdateCheck, "no-update-check", false, "do not check for updates on startup")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
