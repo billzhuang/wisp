@@ -90,6 +90,11 @@ session. The updater downloads the asset for the running OS/arch, verifies its
 SHA-256 against the release's checksums file, and atomically replaces the
 binary; you restart wisp to run the new version.
 
+Updates don't accumulate disk: the swap keeps the previous binary as a
+`.old` backup so a failed replace can roll back, and every launch reclaims
+that backup (plus any temp file from an interrupted download) best-effort, so
+the install directory holds a single binary across repeated upgrades.
+
 This is driven by [`.github/workflows/release.yml`](.github/workflows/release.yml):
 pushing a `vX.Y.Z` tag builds the binaries and a `checksums.txt` and publishes
 them as a Release. The version is stamped into the binary at link time, and

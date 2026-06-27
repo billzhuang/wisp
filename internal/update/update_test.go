@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // fakeGitHub serves a release, a per-platform binary asset, and a checksums
@@ -233,6 +234,126 @@ func TestFindChecksumsVariants(t *testing.T) {
 	}
 	if findChecksums([]Asset{{Name: "wisp_linux_amd64"}}) != nil {
 		t.Fatal("should not find a checksums asset when none present")
+	}
+}
+
+func TestCleanupLeftovers(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "wisp")
+	mustWrite(t, target, "current binary")
+	mustWrite(t, target+".old", "previous binary") // Windows-style leftover
+	// Orphaned downloads: old enough to be past the in-flight grace window.
+	staleA := filepath.Join(dir, ".wisp-update-abc")
+	staleB := filepath.Join(dir, ".wisp-update-xyz")
+	mustWriteOld(t, staleA, "x")
+	mustWriteOld(t, staleB, "y")
+	// Files that must survive: the live binary, anything not ours, and a temp
+	// file recent enough to be a download still in progress.
+	mustWrite(t, filepath.Join(dir, "notes.txt"), "keep me")
+	mustWrite(t, filepath.Join(dir, "wisp.cfg"), "keep me too")
+	fresh := filepath.Join(dir, ".wisp-update-inflight")
+	mustWrite(t, fresh, "downloading")
+
+	a := &Applier{TargetPath: target}
+	if got := a.CleanupLeftovers(); got != 3 {
+		t.Fatalf("removed %d files, want 3 (.old + 2 stale temp)", got)
+	}
+
+	mustExist(t, target)
+	mustExist(t, filepath.Join(dir, "notes.txt"))
+	mustExist(t, filepath.Join(dir, "wisp.cfg"))
+	mustExist(t, fresh) // in-flight download must not be swept
+	mustGone(t, target+".old")
+	mustGone(t, staleA)
+	mustGone(t, staleB)
+}
+
+// TestCleanupLeftoversGlobMetacharDir guards the os.ReadDir approach: an install
+// directory whose name contains glob metacharacters must not defeat cleanup.
+// filepath.Glob would read "[1]" as a character class and match nothing here.
+func TestCleanupLeftoversGlobMetacharDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "app[1]")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "wisp")
+	mustWrite(t, target, "current binary")
+	mustWrite(t, target+".old", "previous binary")
+	stale := filepath.Join(dir, ".wisp-update-orphan")
+	mustWriteOld(t, stale, "x")
+
+	a := &Applier{TargetPath: target}
+	if got := a.CleanupLeftovers(); got != 2 {
+		t.Fatalf("removed %d files, want 2 (.old + 1 stale temp) in a bracketed dir", got)
+	}
+	mustExist(t, target)
+	mustGone(t, target+".old")
+	mustGone(t, stale)
+}
+
+func TestCleanupLeftoversNothingToDo(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "wisp")
+	mustWrite(t, target, "current binary")
+
+	a := &Applier{TargetPath: target}
+	if got := a.CleanupLeftovers(); got != 0 {
+		t.Fatalf("removed %d files, want 0 on a clean directory", got)
+	}
+	mustExist(t, target)
+}
+
+// TestApplyLeavesNoLeftovers is the end-to-end disk-hygiene guarantee: after a
+// successful update, a follow-up cleanup finds nothing to remove (Apply already
+// reclaimed the .old on Unix), so disk usage does not grow per update.
+func TestApplyLeavesNoLeftovers(t *testing.T) {
+	srv, _ := fakeGitHub(t, "v1.2.0", []byte("new"))
+	target := filepath.Join(t.TempDir(), "wisp")
+	mustWrite(t, target, "old")
+
+	c := &Checker{Repo: "owner/repo", Current: "1.1.0", BaseURL: srv.URL}
+	rel, _, err := c.CheckForUpdate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &Applier{TargetPath: target, OS: "testos", Arch: "testarch"}
+	if err := a.Apply(context.Background(), rel); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got := a.CleanupLeftovers(); got != 0 {
+		t.Fatalf("post-update cleanup removed %d files, want 0", got)
+	}
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// mustWriteOld writes a file and backdates it well past tempStaleAfter so
+// CleanupLeftovers treats it as an orphaned (not in-flight) download.
+func mustWriteOld(t *testing.T, path, content string) {
+	t.Helper()
+	mustWrite(t, path, content)
+	old := time.Now().Add(-2 * tempStaleAfter)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustExist(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected %s to exist: %v", filepath.Base(path), err)
+	}
+}
+
+func mustGone(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be removed (err=%v)", filepath.Base(path), err)
 	}
 }
 
