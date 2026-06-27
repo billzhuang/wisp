@@ -25,25 +25,25 @@ var ansi16 = [16]color.RGBA{
 	{0xff, 0xff, 0xff, 0xff}, // 15 bright white
 }
 
-// ANSI16 returns one of the 16 standard colours. Out-of-range indices clamp.
-func ANSI16(i int) color.Color {
-	if i < 0 {
-		i = 0
+// colors256 is the full xterm 256-colour palette pre-boxed into color.Color
+// interface values. Boxing a color.RGBA value into an interface heap-allocates,
+// so the parser's hot path (an SGR colour change per coloured run of output)
+// would allocate on every call if ANSI16/Index256 boxed a fresh value each time.
+// Doing it once at init makes the lookups allocation-free.
+var colors256 [256]color.Color
+
+func init() {
+	for i := range colors256 {
+		colors256[i] = rgba256(i)
 	}
-	if i > 15 {
-		i = 15
-	}
-	return ansi16[i]
 }
 
-// Index256 returns the colour for an xterm 256-colour index:
+// rgba256 is the raw xterm colour for 256-palette index i (0-255):
 //   - 0-15  : the standard 16 colours
 //   - 16-231: a 6x6x6 RGB cube
 //   - 232-255: a 24-step grayscale ramp
-func Index256(i int) color.Color {
+func rgba256(i int) color.RGBA {
 	switch {
-	case i < 0:
-		return ansi16[0]
 	case i < 16:
 		return ansi16[i]
 	case i < 232:
@@ -52,11 +52,33 @@ func Index256(i int) color.Color {
 		g := (i / 6) % 6
 		b := i % 6
 		return color.RGBA{cubeStep(r), cubeStep(g), cubeStep(b), 0xff}
-	case i < 256:
+	default: // 232-255
 		v := uint8(8 + (i-232)*10)
 		return color.RGBA{v, v, v, 0xff}
+	}
+}
+
+// ANSI16 returns one of the 16 standard colours. Out-of-range indices clamp.
+func ANSI16(i int) color.Color {
+	if i < 0 {
+		i = 0
+	}
+	if i > 15 {
+		i = 15
+	}
+	return colors256[i]
+}
+
+// Index256 returns the colour for an xterm 256-colour index (see rgba256).
+// Negative indices clamp to 0; indices above 255 clamp to bright white.
+func Index256(i int) color.Color {
+	switch {
+	case i < 0:
+		return colors256[0]
+	case i < 256:
+		return colors256[i]
 	default:
-		return ansi16[15]
+		return colors256[15]
 	}
 }
 

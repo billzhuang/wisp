@@ -19,7 +19,10 @@ type vtEngine struct {
 	mu sync.Mutex
 
 	cols, rows int
-	cells      []Cell
+	// grid holds one slice per visible row. Storing rows as separate slices lets
+	// scrollUp/scrollDown rotate row references (O(rows)) and recycle one row,
+	// instead of memmoving the whole cell array (O(rows*cols)) on every line feed.
+	grid [][]Cell
 
 	curCol, curRow int
 	curVisible     bool
@@ -56,7 +59,7 @@ func NewTerminal(opts ...Option) Engine {
 		curVisible: true,
 		cur:        Blank,
 	}
-	e.cells = makeCells(cfg.cols, cfg.rows)
+	e.grid = newGrid(cfg.cols, cfg.rows)
 	return e
 }
 
@@ -77,12 +80,25 @@ func WithSize(cols, rows int) Option {
 	}
 }
 
-func makeCells(cols, rows int) []Cell {
-	cells := make([]Cell, cols*rows)
-	for i := range cells {
-		cells[i] = Blank
+func newGrid(cols, rows int) [][]Cell {
+	g := make([][]Cell, rows)
+	for r := range g {
+		g[r] = makeRow(cols)
 	}
-	return cells
+	return g
+}
+
+func makeRow(cols int) []Cell {
+	row := make([]Cell, cols)
+	blankRow(row)
+	return row
+}
+
+// blankRow resets every cell in row to Blank.
+func blankRow(row []Cell) {
+	for i := range row {
+		row[i] = Blank
+	}
 }
 
 func (e *vtEngine) Size() (int, int) {
@@ -100,8 +116,10 @@ func (e *vtEngine) Cursor() (int, int, bool) {
 func (e *vtEngine) Snapshot() Grid {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	g := Grid{Cols: e.cols, Rows: e.rows, Cells: make([]Cell, len(e.cells))}
-	copy(g.Cells, e.cells)
+	g := Grid{Cols: e.cols, Rows: e.rows, Cells: make([]Cell, e.cols*e.rows)}
+	for r := 0; r < e.rows; r++ {
+		copy(g.Cells[r*e.cols:], e.grid[r])
+	}
 	return g
 }
 
@@ -111,14 +129,13 @@ func (e *vtEngine) Resize(cols, rows int) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	next := makeCells(cols, rows)
-	// Preserve overlapping content.
+	next := newGrid(cols, rows)
+	// Preserve overlapping content (top-left aligned).
+	overlap := min(cols, e.cols)
 	for r := 0; r < rows && r < e.rows; r++ {
-		for c := 0; c < cols && c < e.cols; c++ {
-			next[r*cols+c] = e.cells[r*e.cols+c]
-		}
+		copy(next[r], e.grid[r][:overlap])
 	}
-	e.cols, e.rows, e.cells = cols, rows, next
+	e.cols, e.rows, e.grid = cols, rows, next
 	e.curCol = clamp(e.curCol, 0, cols-1)
 	e.curRow = clamp(e.curRow, 0, rows-1)
 }
@@ -348,7 +365,7 @@ func (e *vtEngine) put(r rune) {
 	}
 	c := e.cur
 	c.Rune = r
-	e.cells[e.curRow*e.cols+e.curCol] = c
+	e.grid[e.curRow][e.curCol] = c
 	e.curCol++
 }
 
@@ -360,36 +377,38 @@ func (e *vtEngine) lineFeed() {
 	}
 }
 
+// scrollUp moves every row up by one, recycling the top row as a cleared bottom
+// row. Only row references are shifted, so the cost is O(rows) plus one row
+// clear — not an O(rows*cols) copy of the whole grid.
 func (e *vtEngine) scrollUp() {
-	copy(e.cells, e.cells[e.cols:])
-	last := (e.rows - 1) * e.cols
-	for i := last; i < len(e.cells); i++ {
-		e.cells[i] = Blank
-	}
+	recycled := e.grid[0]
+	copy(e.grid, e.grid[1:]) // shift rows 1..n-1 down into 0..n-2
+	blankRow(recycled)
+	e.grid[e.rows-1] = recycled
 }
 
+// scrollDown is the mirror of scrollUp: every row moves down by one and the
+// bottom row is recycled as a cleared top row.
 func (e *vtEngine) scrollDown() {
-	copy(e.cells[e.cols:], e.cells[:len(e.cells)-e.cols])
-	for i := 0; i < e.cols; i++ {
-		e.cells[i] = Blank
-	}
+	recycled := e.grid[e.rows-1]
+	copy(e.grid[1:], e.grid[:e.rows-1]) // shift rows 0..n-2 up into 1..n-1
+	blankRow(recycled)
+	e.grid[0] = recycled
 }
 
 func (e *vtEngine) eraseLine(mode int) {
-	row := e.curRow * e.cols
+	row := e.grid[e.curRow]
 	switch mode {
 	case 0: // cursor to end of line
 		for c := e.curCol; c < e.cols; c++ {
-			e.cells[row+c] = Blank
+			row[c] = Blank
 		}
 	case 1: // start of line to cursor
 		for c := 0; c <= e.curCol && c < e.cols; c++ {
-			e.cells[row+c] = Blank
+			row[c] = Blank
 		}
 	case 2: // whole line
-		for c := 0; c < e.cols; c++ {
-			e.cells[row+c] = Blank
-		}
+		blankRow(row)
 	}
 }
 
@@ -397,23 +416,23 @@ func (e *vtEngine) eraseDisplay(mode int) {
 	switch mode {
 	case 0: // cursor to end of screen
 		e.eraseLine(0)
-		for i := (e.curRow + 1) * e.cols; i < len(e.cells); i++ {
-			e.cells[i] = Blank
+		for r := e.curRow + 1; r < e.rows; r++ {
+			blankRow(e.grid[r])
 		}
 	case 1: // start of screen to cursor
-		for i := 0; i < e.curRow*e.cols; i++ {
-			e.cells[i] = Blank
+		for r := 0; r < e.curRow; r++ {
+			blankRow(e.grid[r])
 		}
 		e.eraseLine(1)
 	case 2, 3: // whole screen
-		for i := range e.cells {
-			e.cells[i] = Blank
+		for r := 0; r < e.rows; r++ {
+			blankRow(e.grid[r])
 		}
 	}
 }
 
 func (e *vtEngine) reset() {
-	e.cells = makeCells(e.cols, e.rows)
+	e.grid = newGrid(e.cols, e.rows)
 	e.curCol, e.curRow = 0, 0
 	e.curVisible = true
 	e.cur = Blank
