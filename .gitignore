@@ -1,0 +1,21 @@
+# Build output
+/wisp
+/dist/
+*.exe
+
+# Go build/test artifacts
+*.test
+*.out
+/vendor/
+go.work
+go.work.sum
+
+# tsnet node state (never commit node identity/keys)
+*.state
+/state/
+
+# Local editor / OS cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/

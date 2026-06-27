@@ -1,0 +1,84 @@
+name: ci
+
+# Least-privilege token: CI only needs to read the repo.
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (default / pure Go)
+    runs-on: ubuntu-latest
+    steps:
+      # persist-credentials:false avoids leaving the token on disk (zizmor
+      # "artipacked"); the Go version comes from go.mod so module + CI never
+      # drift. (Actions left on release tags: pinning to a SHA needs a verified
+      # hash, which can't be confirmed from the build sandbox.)
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Verify formatting
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: Vet
+        run: go vet ./...
+      - name: Test (race)
+        run: go test -race ./...
+      - name: Build (default, pure Go)
+        run: go build ./...
+
+  gui-linux:
+    name: gui (ebiten, Linux smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install GPU/windowing dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev libxrandr-dev libxcursor-dev libxinerama-dev \
+            libxi-dev libxxf86vm-dev xvfb
+      - name: Build GUI
+        env:
+          CGO_ENABLED: "1"
+        run: go build -tags ebiten ./...
+      - name: Vet GUI
+        env:
+          CGO_ENABLED: "1"
+        run: go vet -tags ebiten ./...
+      - name: Test GUI update-banner path (race)
+        env:
+          CGO_ENABLED: "1"
+        run: xvfb-run -a go test -race -tags ebiten ./internal/render/...
+
+  gui-macos:
+    name: gui (ebiten, macOS Apple Silicon — release target)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build GUI (cgo, darwin/arm64)
+        env:
+          CGO_ENABLED: "1"
+          GOOS: darwin
+          GOARCH: arm64
+        run: go build -tags ebiten ./cmd/wisp
+      - name: Test GUI update-banner path
+        env:
+          CGO_ENABLED: "1"
+        run: go test -tags ebiten ./internal/render/...

@@ -1,0 +1,81 @@
+name: release
+
+# Continuous delivery. Pushing a semver tag (v1.2.3) builds the wisp binaries
+# and a checksums file and publishes them as a GitHub Release. The in-app
+# updater (internal/update) reads exactly these asset names and verifies them
+# against the checksums file, so a tagged release becomes a one-click
+# ("press Ctrl+U" / `wisp -update`) upgrade.
+#
+# Target: Apple Silicon macOS. The GUI (Ebitengine) build needs cgo + the macOS
+# frameworks, so it must build on a native Apple-Silicon runner — it cannot be
+# cross-compiled. We publish two flavors, each of which self-updates to its own
+# asset (see cmd/wisp/flavor_*.go):
+#   wisp-gui_darwin_arm64  — the GPU terminal app (primary)
+#   wisp_darwin_arm64      — the pure-Go stdio/CLI build
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  build:
+    name: build (macOS Apple Silicon)
+    runs-on: macos-15 # newest macOS, Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build GUI (Ebitengine, cgo)
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+          CGO_ENABLED: "1"
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          go build -trimpath -tags ebiten \
+            -ldflags "-s -w -X github.com/billzhuang/wisp/internal/version.Version=${version}" \
+            -o "wisp-gui_darwin_arm64" ./cmd/wisp
+
+      - name: Build CLI (pure Go)
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/billzhuang/wisp/internal/version.Version=${version}" \
+            -o "wisp_darwin_arm64" ./cmd/wisp
+
+      - name: Ad-hoc codesign (so Gatekeeper doesn't mark the app "damaged")
+        run: |
+          codesign --sign - --force --timestamp=none wisp-gui_darwin_arm64
+          codesign --sign - --force --timestamp=none wisp_darwin_arm64
+          # NOTE: ad-hoc signing is not notarization. On first launch users may
+          # still need: Control-click → Open, or `xattr -d com.apple.quarantine`.
+
+      - name: Checksums
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          shasum -a 256 wisp-gui_darwin_arm64 wisp_darwin_arm64 > "wisp_${version}_checksums.txt"
+          cat "wisp_${version}_checksums.txt"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            wisp-gui_darwin_arm64 \
+            wisp_darwin_arm64 \
+            "wisp_${version}_checksums.txt"
