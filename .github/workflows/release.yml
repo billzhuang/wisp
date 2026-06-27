@@ -79,3 +79,52 @@ jobs:
             wisp-gui_darwin_arm64 \
             wisp_darwin_arm64 \
             "wisp_${version}_checksums.txt"
+
+  # Keep the Homebrew tap in sync. This repo is itself the tap: committing
+  # Formula/wisp.rb to the default branch lets users run
+  # `brew install billzhuang/wisp/wisp` — no separate homebrew-wisp repo needed.
+  # Runs as its own job (needs: build) so a hiccup here can never fail the
+  # release itself; the formula is regenerated from the published checksums by
+  # cmd/genbrew so it can't drift from the assets.
+  brew:
+    name: update Homebrew tap formula
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # commit the regenerated formula to the default branch
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main # commit the formula to the default branch, not the tag
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Render Formula/wisp.rb from the release checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern "wisp_${version}_checksums.txt" --output checksums.txt
+          go run ./cmd/genbrew \
+            -version "${version}" \
+            -url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/wisp_darwin_arm64" \
+            -checksums checksums.txt \
+            -out Formula/wisp.rb
+          rm -f checksums.txt
+      - name: Commit the updated formula
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/wisp.rb
+          if git diff --cached --quiet; then
+            echo "formula already up to date"
+            exit 0
+          fi
+          git commit -m "brew: update formula to ${version}"
+          # Rebase onto any commits that landed on main since checkout so the
+          # push is a fast-forward; the formula is regenerated wholesale so there
+          # is nothing to conflict on.
+          git pull --rebase origin main
+          git push origin HEAD:main

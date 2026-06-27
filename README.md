@@ -54,6 +54,29 @@ Every layer is an interface so it can be swapped and tested in isolation:
 | Controller | `internal/app` | — | wires SSH ↔ frontend | |
 | Config | `internal/config` | — | flags + env | |
 
+## Install
+
+### Homebrew
+
+This repository doubles as its own Homebrew tap, so no separate `homebrew-wisp`
+repo is involved:
+
+```sh
+brew install billzhuang/wisp/wisp
+```
+
+That installs the pure-Go **CLI** flavor (`wisp`). The release workflow
+regenerates `Formula/wisp.rb` from the published checksums on every tagged
+release (`cmd/genbrew`), so the formula always matches the verified release
+binary — meaning `brew install` works from the first tagged release onward. The
+GPU **GUI** app ships via the GitHub release and updates itself in-app (see
+[Auto-update](#auto-update)).
+
+### From a release / source
+
+Download a binary from [Releases](https://github.com/billzhuang/wisp/releases),
+or `go install github.com/billzhuang/wisp/cmd/wisp@latest` for the CLI.
+
 ## Usage
 
 ```sh
