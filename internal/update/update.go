@@ -219,11 +219,22 @@ func (a *Applier) Apply(ctx context.Context, rel *Release) error {
 	if err := os.Chmod(tmpName, 0o755); err != nil {
 		return fmt.Errorf("update: chmod: %w", err)
 	}
-	// Atomic replace. On Unix the running binary's inode stays valid, so this
-	// is safe while wisp is executing; the new binary is used on next launch.
+	// Replace the running executable. Renaming the current binary aside first
+	// (rather than overwriting it directly) is the portable pattern: on Windows
+	// the live executable is locked and cannot be overwritten, but it *can* be
+	// renamed. On Unix this is equivalent to an atomic swap. The .old file is
+	// cleaned up best-effort and otherwise removed on the next launch.
+	backup := target + ".old"
+	_ = os.Remove(backup) // clear any stale backup
+	if err := os.Rename(target, backup); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("update: moving current binary aside: %w", err)
+	}
 	if err := os.Rename(tmpName, target); err != nil {
+		// Roll back so the user is left with a working binary.
+		_ = os.Rename(backup, target)
 		return fmt.Errorf("update: replacing %s: %w", target, err)
 	}
+	_ = os.Remove(backup) // best-effort; on Windows may be locked until restart
 	return nil
 }
 

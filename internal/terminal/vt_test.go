@@ -159,7 +159,11 @@ func TestUTF8MultibyteAndSplit(t *testing.T) {
 	// the cross-Write accumulator.
 	writeStr(e, "h\xc3\xa9llo")
 	for _, b := range []byte(" 😀") {
-		e.Write([]byte{b})
+		// Feed raw bytes one at a time (string(b) would UTF-8 re-encode the
+		// byte and defeat the cross-Write accumulator this test exercises).
+		if _, err := e.Write([]byte{b}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	g := e.Snapshot()
 	line := g.Line(0)
@@ -168,6 +172,25 @@ func TestUTF8MultibyteAndSplit(t *testing.T) {
 	}
 	if !strings.Contains(line, "😀") {
 		t.Fatalf("expected emoji in %q", line)
+	}
+}
+
+// TestBrokenUTF8ByteIsReprocessed ensures a byte that interrupts a multi-byte
+// UTF-8 sequence (here ESC starting an SGR sequence) is not dropped: the color
+// must still take effect on the following character.
+func TestBrokenUTF8ByteIsReprocessed(t *testing.T) {
+	e := NewTerminal(WithSize(10, 2))
+	// 0xc3 starts a 2-byte sequence; ESC breaks it. The incomplete sequence
+	// emits a replacement rune at (0,0), and the reprocessed "\x1b[31m" must
+	// still be honoured so the following 'A' (at col 1) is red.
+	writeStr(e, "\xc3\x1b[31mA")
+	g := e.Snapshot()
+	c := g.At(1, 0)
+	if c.Rune != 'A' {
+		t.Fatalf("expected 'A' at (1,0), got %q (line %q)", c.Rune, g.Line(0))
+	}
+	if c.FG == nil {
+		t.Fatal("expected SGR colour to apply after broken UTF-8 byte was reprocessed")
 	}
 }
 

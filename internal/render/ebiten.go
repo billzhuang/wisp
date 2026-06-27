@@ -18,6 +18,7 @@ import (
 	"image/color"
 	"sync"
 
+	"github.com/billzhuang/wisp/internal/banner"
 	"github.com/billzhuang/wisp/internal/terminal"
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
@@ -44,6 +45,7 @@ type ebitenFrontend struct {
 	banner   string       // update notice; empty hides the banner
 	install  func() error // click-to-install action
 	updating bool         // an install is in flight
+	loading  bool         // true until the first remote byte arrives
 }
 
 // SetUpdate implements render.UpdatePrompter: it shows a top banner offering
@@ -60,6 +62,7 @@ func (f *ebitenFrontend) Run(ctx context.Context, ctrl Controller, eng terminal.
 	f.eng = eng
 	f.face = text.NewGoXFace(basicfont.Face7x13)
 	f.cols, f.rows = eng.Size()
+	f.loading = true // show the splash until the first remote byte
 
 	// Pump remote output into the engine in the background; Draw reads snapshots.
 	go func() {
@@ -69,6 +72,9 @@ func (f *ebitenFrontend) Run(ctx context.Context, ctrl Controller, eng terminal.
 			n, err := r.Read(buf)
 			if n > 0 {
 				eng.Write(buf[:n])
+				f.mu.Lock()
+				f.loading = false
+				f.mu.Unlock()
 			}
 			if err != nil {
 				return
@@ -156,8 +162,17 @@ func (f *ebitenFrontend) triggerInstall() {
 }
 
 func (f *ebitenFrontend) Draw(screen *ebiten.Image) {
-	g := f.eng.Snapshot()
 	screen.Fill(color.Black)
+
+	f.mu.Lock()
+	loading := f.loading
+	f.mu.Unlock()
+	if loading {
+		f.drawSplash(screen)
+		return
+	}
+
+	g := f.eng.Snapshot()
 	for row := 0; row < g.Rows; row++ {
 		for col := 0; col < g.Cols; col++ {
 			c := g.At(col, row)
@@ -175,6 +190,24 @@ func (f *ebitenFrontend) Draw(screen *ebiten.Image) {
 		}
 	}
 	f.drawBanner(screen)
+}
+
+// drawSplash centers the wisp ASCII logo while the session connects.
+func (f *ebitenFrontend) drawSplash(screen *ebiten.Image) {
+	lines := banner.Lines()
+	lines = append(lines, "", "connecting…")
+	w := screen.Bounds().Dx()
+	startY := screen.Bounds().Dy()/2 - len(lines)*cellH/2
+	for i, line := range lines {
+		x := w/2 - len(line)*cellW/2
+		if x < 0 {
+			x = 0
+		}
+		op := &text.DrawOptions{}
+		op.GeoM.Translate(float64(x), float64(startY+i*cellH))
+		op.ColorScale.ScaleWithColor(color.RGBA{0x7a, 0xa2, 0xf7, 0xff}) // soft blue
+		text.Draw(screen, line, f.face, op)
+	}
 }
 
 // drawBanner overlays the update notice along the top of the window.

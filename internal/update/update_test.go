@@ -31,6 +31,11 @@ func fakeGitHub(t *testing.T, tag string, binary []byte) (*httptest.Server, stri
 	mux.HandleFunc("/download/checksums", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, checksums)
 	})
+	// A well-formed checksums file whose hash is deliberately wrong, to exercise
+	// the verification-mismatch branch (not just a download failure).
+	mux.HandleFunc("/download/badchecksums", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "%s  %s\n", "00000000000000000000000000000000000000000000000000000000deadbeef", assetName)
+	})
 	mux.HandleFunc("/repos/owner/repo/releases/latest", func(w http.ResponseWriter, r *http.Request) {
 		rel := Release{
 			Tag:     tag,

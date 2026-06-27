@@ -4,6 +4,7 @@ package render
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 
@@ -31,7 +32,11 @@ func (s *stdioFrontend) Run(ctx context.Context, ctrl Controller, eng terminal.E
 	if term.IsTerminal(fd) {
 		old, err := term.MakeRaw(fd)
 		if err == nil {
-			restore = func() { term.Restore(fd, old) }
+			restore = func() {
+				if rerr := term.Restore(fd, old); rerr != nil {
+					fmt.Fprintf(os.Stderr, "wisp: failed to restore terminal: %v\n", rerr)
+				}
+			}
 		}
 		if w, h, err := term.GetSize(fd); err == nil {
 			eng.Resize(w, h)

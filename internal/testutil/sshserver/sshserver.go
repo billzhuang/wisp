@@ -235,7 +235,9 @@ func parsePtyReq(b []byte) (term string, cols, rows uint32, ok bool) {
 		return "", 0, 0, false
 	}
 	n := beUint32(b)
-	if int(n)+4+8 > len(b) {
+	// Validate with a wide unsigned type so a peer-controlled length cannot
+	// overflow int (and bypass the bounds check) on 32-bit platforms.
+	if uint64(n)+4+8 > uint64(len(b)) {
 		return "", 0, 0, false
 	}
 	term = string(b[4 : 4+n])

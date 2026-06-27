@@ -38,6 +38,11 @@ func KnownHostsCallback(path string, trustOnFirstUse bool) (ssh.HostKeyCallback,
 
 	var mu sync.Mutex
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		// Serialize so the in-memory verifier and the on-disk file stay in sync
+		// across concurrent dials.
+		mu.Lock()
+		defer mu.Unlock()
+
 		err := base(hostname, remote, key)
 		if err == nil {
 			return nil
@@ -52,9 +57,16 @@ func KnownHostsCallback(path string, trustOnFirstUse bool) (ssh.HostKeyCallback,
 			return fmt.Errorf("sshx: host key mismatch for %s (possible MITM): %w", hostname, err)
 		}
 		// Otherwise the host is simply unknown: record it and accept.
-		mu.Lock()
-		defer mu.Unlock()
-		return appendKnownHost(path, hostname, key)
+		if aerr := appendKnownHost(path, hostname, key); aerr != nil {
+			return aerr
+		}
+		// knownhosts.New snapshots the file at construction, so reload it now
+		// that we've appended — otherwise a later dial to the same host in this
+		// process would see it as "unknown" again and append a duplicate entry.
+		if nb, nerr := knownhosts.New(path); nerr == nil {
+			base = nb
+		}
+		return nil
 	}, nil
 }
 

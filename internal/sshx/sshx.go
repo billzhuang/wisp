@@ -102,6 +102,13 @@ func Dial(ctx context.Context, d transport.Dialer, cfg Config) (*Session, error)
 	select {
 	case <-ctx.Done():
 		conn.Close()
+		// The handshake goroutine may still be in flight; if it produced a live
+		// client just as ctx was cancelled, drain and close it so it can't leak.
+		go func() {
+			if r := <-done; r.c != nil {
+				r.c.Close()
+			}
+		}()
 		return nil, ctx.Err()
 	case r := <-done:
 		if r.e != nil {

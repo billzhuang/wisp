@@ -1,6 +1,6 @@
 # Build guide
 
-The **default build is pure Go** and needs only the Go toolchain (1.25+):
+The **default build is pure Go** and needs only the Go toolchain (1.26+):
 
 ```sh
 go build ./...

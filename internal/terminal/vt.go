@@ -149,6 +149,11 @@ func (e *vtEngine) ground(b byte) {
 	if e.utf.pending() {
 		if r, ok := e.utf.feed(b); ok {
 			e.put(r)
+			// A byte that broke the sequence (e.g. ESC) must be reprocessed as
+			// fresh input rather than swallowed.
+			if pb, has := e.utf.takePending(); has {
+				e.step(pb)
+			}
 		}
 		return
 	}

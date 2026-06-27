@@ -106,3 +106,39 @@ func TestControllerInputReachesRemote(t *testing.T) {
 		t.Fatal("remote never received input")
 	}
 }
+
+// TestControllerDialFailure verifies app.Dial propagates a connection error
+// when nothing is listening at the address.
+func TestControllerDialFailure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := app.Dial(ctx, transport.NewNetDialer(), sshx.Config{
+		Addr:    "127.0.0.1:1", // nothing listening
+		User:    "u",
+		Auth:    []ssh.AuthMethod{ssh.Password("")},
+		HostKey: sshx.InsecureIgnoreHostKey(),
+	})
+	if err == nil {
+		t.Fatal("expected error dialing unreachable address")
+	}
+}
+
+// TestControllerClose verifies Close can be called on an active session without
+// returning an unexpected error.
+func TestControllerClose(t *testing.T) {
+	ctrl, _ := dialController(t, func(io.Reader, io.Writer, string, sshserver.PTYRequest) {}, 40, 10)
+	if err := ctrl.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctrl.Close(); err != nil {
+		t.Fatalf("Close returned: %v", err)
+	}
+}
+
+// TestControllerStderrReturnsReader checks the Stderr pipe is wired (non-nil).
+func TestControllerStderrReturnsReader(t *testing.T) {
+	ctrl, _ := dialController(t, func(io.Reader, io.Writer, string, sshserver.PTYRequest) {}, 40, 10)
+	if ctrl.Stderr() == nil {
+		t.Fatal("Stderr() should not be nil")
+	}
+}

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/billzhuang/wisp/internal/app"
+	"github.com/billzhuang/wisp/internal/banner"
 	"github.com/billzhuang/wisp/internal/config"
 	"github.com/billzhuang/wisp/internal/render"
 	"github.com/billzhuang/wisp/internal/sshx"
@@ -61,6 +62,9 @@ func run(args []string) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+
+	// ASCII splash (constant string — no measurable startup cost).
+	fmt.Fprint(os.Stderr, banner.Render(version.Current(), "connecting to "+cfg.Addr()+" …"))
 
 	var pendingUpdate *update.Release
 	if !cfg.NoUpdateCheck {
@@ -116,7 +120,7 @@ func run(args []string) error {
 		if p, ok := frontend.(render.UpdatePrompter); ok {
 			rel := pendingUpdate
 			p.SetUpdate(fmt.Sprintf("Update %s available — press Ctrl+U to install", rel.Version()),
-				func() error { return (&update.Applier{Prefix: assetFlavor}).Apply(context.Background(), rel) })
+				func() error { return (&update.Applier{Prefix: assetFlavor}).Apply(ctx, rel) })
 		}
 	}
 

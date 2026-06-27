@@ -66,9 +66,11 @@ func NewTSNetDialer(cfg TSConfig) (*TSNetDialer, error) {
 		Ephemeral:  cfg.Ephemeral,
 	}
 	if cfg.AuthLog != nil {
-		srv.Logf = func(format string, args ...any) {
-			// tsnet logs the interactive auth URL through Logf; forward it so
-			// the user can complete login on first run.
+		// tsnet surfaces user-facing messages (notably the interactive login
+		// URL on first run) through UserLogf; Logf is noisy backend debug
+		// output. Route auth messages to AuthLog via UserLogf so the login
+		// prompt isn't lost.
+		srv.UserLogf = func(format string, args ...any) {
 			fmt.Fprintf(cfg.AuthLog, format+"\n", args...)
 		}
 	}

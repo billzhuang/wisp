@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	github.com/hajimehoshi/ebiten/v2 v2.9.9
 	golang.org/x/crypto v0.53.0
-	golang.org/x/image v0.41.0
+	golang.org/x/image v0.43.0
 	golang.org/x/term v0.44.0
 	tailscale.com v1.100.0
 )

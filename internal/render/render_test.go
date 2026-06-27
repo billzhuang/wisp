@@ -77,3 +77,26 @@ func TestHeadlessContextCancel(t *testing.T) {
 		t.Fatal("expected context error")
 	}
 }
+
+type customError struct{ msg string }
+
+func (e *customError) Error() string { return e.msg }
+
+// TestHeadlessNonEOFError verifies a non-EOF read error is propagated rather
+// than swallowed or mistaken for a clean end of stream.
+func TestHeadlessNonEOFError(t *testing.T) {
+	pr, pw := io.Pipe()
+	ctrl := &fakeController{out: pr}
+	eng := terminal.NewTerminal(terminal.WithSize(10, 2))
+
+	go pw.CloseWithError(&customError{"pipe broken"})
+
+	if err := (Headless{}).Run(context.Background(), ctrl, eng); err == nil {
+		t.Fatal("expected non-nil error from broken pipe")
+	}
+}
+
+// TestHeadlessImplementsFrontend is a compile-time assertion.
+func TestHeadlessImplementsFrontend(t *testing.T) {
+	var _ Frontend = Headless{}
+}

@@ -27,7 +27,7 @@ the other end is reachable.
 
 One Go process owns everything. The seam:
 
-```
+```text
 [frontend: stdio (default) | Ebitengine (-tags ebiten)]
    ↑ draws grid             ↓ key/mouse events
 [terminal.Engine] ← VT bytes ← stdout ─┐
@@ -114,6 +114,28 @@ CI additionally builds + tests the GUI on Linux (under `xvfb`) as a fast,
 display-independent smoke net, and compile-checks the GUI on macOS Apple Silicon
 (the release target).
 
+## Performance
+
+Honest answer: the **default pure-Go VT engine is fast enough for interactive
+use, but it is not Ghostty-class** on its own. A full 120×40 screen is ~5 KB and
+parses in well under a millisecond, so typing, colour, and normal program output
+feel instant. Bulk throughput (e.g. `cat`-ing a huge file) is bound by VT
+parsing + grid scrolling — `go test -bench=EngineWrite ./internal/terminal/`
+reports the current number on your machine.
+
+Ghostty's "blazing fast" comes from a GPU glyph-cache renderer and a
+SIMD-optimised VT parser written in Zig. wisp reaches that tier through its
+pluggable backends, not by reimplementing them in pure Go:
+
+- **`-tags libghostty`** swaps in the real Ghostty VT engine (libghostty-vt) —
+  the same parser Ghostty ships — behind the identical `terminal.Engine`
+  interface (see [docs/BUILD.md](docs/BUILD.md)).
+- **`-tags ebiten`** renders the grid on the GPU rather than the CPU.
+
+So the architecture is built for Ghostty-class speed; the pure-Go path is the
+always-portable, zero-toolchain fallback. (A row-ring scroll buffer is the next
+easy win for the pure-Go engine and is tracked as a follow-up.)
+
 ## Building & testing
 
 ```sh
@@ -141,7 +163,7 @@ The default build needs only the Go toolchain. The `-tags ebiten` and
 
 ## Layout
 
-```
+```text
 cmd/wisp/                main: flag parsing, auth, dialer selection, wiring
 internal/transport/      Dialer: tsnet node (no daemon) + plain net
 internal/sshx/           SSH client over the dialer conn; known_hosts TOFU

@@ -61,7 +61,10 @@ func (h Headless) Run(ctx context.Context, ctrl Controller, eng terminal.Engine)
 		for {
 			n, err := r.Read(buf)
 			if n > 0 {
-				eng.Write(buf[:n])
+				if _, werr := eng.Write(buf[:n]); werr != nil {
+					done <- werr
+					return
+				}
 				if h.OnFrame != nil {
 					h.OnFrame(eng)
 				}

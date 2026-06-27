@@ -7,9 +7,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // Config is the fully-resolved runtime configuration.
@@ -54,11 +54,13 @@ type Config struct {
 }
 
 // Addr returns Host with a default :22 port appended if none was given.
+// net.SplitHostPort is used (rather than a naive colon check) so bare IPv6
+// hosts — legitimate on a tailnet — are not mistaken for host:port.
 func (c *Config) Addr() string {
-	if strings.Contains(c.Host, ":") {
+	if _, _, err := net.SplitHostPort(c.Host); err == nil {
 		return c.Host
 	}
-	return c.Host + ":22"
+	return net.JoinHostPort(c.Host, "22")
 }
 
 // Validate checks required fields and applies cross-field rules.

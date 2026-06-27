@@ -10,9 +10,28 @@ type utf8acc struct {
 	buf  [4]byte
 	n    int // bytes buffered
 	need int // total bytes expected for the rune in progress (0 = none)
+
+	// When a multi-byte sequence is interrupted by a byte that is not a valid
+	// continuation, feed emits RuneError but that breaking byte is itself
+	// meaningful (it may be ASCII, a C0 control, or ESC). It is stashed here so
+	// the parser can reprocess it instead of dropping it.
+	pendingByte byte
+	hasPending  bool
 }
 
 func (u *utf8acc) pending() bool { return u.need > 0 }
+
+// takePending returns a byte that feed could not consume (the byte that broke a
+// multi-byte sequence), clearing it. The parser drains this after feed emits
+// RuneError so the byte is reprocessed as fresh input.
+func (u *utf8acc) takePending() (byte, bool) {
+	if !u.hasPending {
+		return 0, false
+	}
+	b := u.pendingByte
+	u.hasPending = false
+	return b, true
+}
 
 // feed adds one byte. It returns (rune, true) when a complete rune is decoded,
 // otherwise (0, false) while more continuation bytes are required. Invalid
@@ -39,8 +58,10 @@ func (u *utf8acc) feed(b byte) (rune, bool) {
 
 	// Continuation byte must match 10xxxxxx.
 	if b&0xc0 != 0x80 {
-		// Malformed: emit replacement and restart with this byte.
+		// Malformed: emit replacement for the incomplete sequence and stash the
+		// breaking byte so the parser reprocesses it rather than dropping it.
 		u.reset()
+		u.pendingByte, u.hasPending = b, true
 		return utf8.RuneError, true
 	}
 	u.buf[u.n] = b
