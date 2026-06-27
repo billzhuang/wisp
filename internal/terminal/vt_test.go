@@ -75,6 +75,58 @@ func TestScrollUp(t *testing.T) {
 	}
 }
 
+// TestScrollUpRecyclesRowsBlank scrolls more times than the grid is tall, with
+// shrinking line widths, so rows that once held wide text are recycled for
+// narrower text. A ring buffer that under-clears a recycled row would leak the
+// old wide content; every cell past the live text must read as a blank space.
+func TestScrollUpRecyclesRowsBlank(t *testing.T) {
+	e := NewTerminal(WithSize(5, 2))
+	writeStr(e, "AAAAA\r\nBBBBB\r\nccc\r\nd")
+	g := e.Snapshot()
+	if g.Line(0) != "ccc" || g.Line(1) != "d" {
+		t.Fatalf("got %q / %q, want %q / %q", g.Line(0), g.Line(1), "ccc", "d")
+	}
+	for c := 1; c < 5; c++ { // cols after "d" must be blank, not stale 'B'/'A'
+		if r := g.At(c, 1).Rune; r != ' ' {
+			t.Fatalf("stale cell at col %d of recycled row: %q", c, r)
+		}
+	}
+}
+
+// TestReverseIndexScrollsDown exercises scrollDown via RI (ESC M) at the top of
+// the screen: content moves down a row and the bottom row is recycled as a
+// cleared top row.
+func TestReverseIndexScrollsDown(t *testing.T) {
+	e := NewTerminal(WithSize(5, 3))
+	writeStr(e, "r1\r\nr2\r\nr3") // rows: r1, r2, r3 (cursor on last row)
+	writeStr(e, "\x1b[H")         // cursor home (top-left)
+	writeStr(e, "\x1bM")          // RI at top → scroll down
+	g := e.Snapshot()
+	if g.Line(0) != "" || g.Line(1) != "r1" || g.Line(2) != "r2" {
+		t.Fatalf("after RI got %q / %q / %q, want \"\" / r1 / r2",
+			g.Line(0), g.Line(1), g.Line(2))
+	}
+}
+
+// TestReverseIndexRecyclesRowsBlank is the scrollDown mirror of
+// TestScrollUpRecyclesRowsBlank: a wide bottom row is recycled to the top, so
+// an under-clearing ring would leak its tail past the new narrow content.
+func TestReverseIndexRecyclesRowsBlank(t *testing.T) {
+	e := NewTerminal(WithSize(5, 2))
+	writeStr(e, "r0\r\nWIDEX") // row0 "r0", row1 "WIDEX"
+	writeStr(e, "\x1b[H")      // cursor home
+	writeStr(e, "\x1bMz")      // RI scrolls down (recycles the wide row to top), then 'z'
+	g := e.Snapshot()
+	if g.Line(0) != "z" || g.Line(1) != "r0" {
+		t.Fatalf("got %q / %q, want %q / %q", g.Line(0), g.Line(1), "z", "r0")
+	}
+	for c := 1; c < 5; c++ { // recycled top row must be blank, not stale "IDEX"
+		if r := g.At(c, 0).Rune; r != ' ' {
+			t.Fatalf("stale cell at col %d of recycled top row: %q", c, r)
+		}
+	}
+}
+
 func TestCursorPositionAndOverwrite(t *testing.T) {
 	e := NewTerminal(WithSize(10, 4))
 	writeStr(e, "\x1b[2;3HX") // CUP row2 col3

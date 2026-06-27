@@ -28,6 +28,22 @@ func BenchmarkEngineWrite(b *testing.B) {
 	}
 }
 
+// BenchmarkEngineScroll isolates scroll throughput: once the grid is full every
+// newline forces a scroll, so this measures the per-line scroll cost that bulk
+// output (e.g. cat-ing a large file) is bound by.
+func BenchmarkEngineScroll(b *testing.B) {
+	chunk := []byte(strings.Repeat("x\r\n", 256))
+	e := NewTerminal(WithSize(120, 40))
+	b.SetBytes(int64(len(chunk)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := e.Write(chunk); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // BenchmarkSnapshot measures the cost of copying the grid for a render frame.
 func BenchmarkSnapshot(b *testing.B) {
 	e := NewTerminal(WithSize(120, 40))

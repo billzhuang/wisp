@@ -128,6 +128,12 @@ feel instant. Bulk throughput (e.g. `cat`-ing a huge file) is bound by VT
 parsing + grid scrolling — `go test -bench=EngineWrite ./internal/terminal/`
 reports the current number on your machine.
 
+The grid scrolls by rotating per-row references and recycling one row, so a
+line feed costs O(rows) rather than an O(rows×cols) copy of the whole grid, and
+the SGR colour palette is interned so coloured output doesn't allocate per
+cell. (`go test -bench=EngineScroll ./internal/terminal/` measures the scroll
+path on its own.)
+
 Ghostty's "blazing fast" comes from a GPU glyph-cache renderer and a
 SIMD-optimised VT parser written in Zig. wisp reaches that tier through its
 pluggable backends, not by reimplementing them in pure Go:
@@ -138,8 +144,7 @@ pluggable backends, not by reimplementing them in pure Go:
 - **`-tags ebiten`** renders the grid on the GPU rather than the CPU.
 
 So the architecture is built for Ghostty-class speed; the pure-Go path is the
-always-portable, zero-toolchain fallback. (A row-ring scroll buffer is the next
-easy win for the pure-Go engine and is tracked as a follow-up.)
+always-portable, zero-toolchain fallback.
 
 ## Building & testing
 
