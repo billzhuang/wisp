@@ -9,8 +9,11 @@ import (
 
 func TestRunWritesFormulaFromChecksums(t *testing.T) {
 	dir := t.TempDir()
+	guiSHA := strings.Repeat("ab", 32) // SHA256For requires real 64-char digests
+	cliSHA := strings.Repeat("cd", 32)
 	sums := filepath.Join(dir, "checksums.txt")
-	if err := os.WriteFile(sums, []byte("aaa  wisp-gui_darwin_arm64\nbbb  wisp_darwin_arm64\n"), 0o644); err != nil {
+	body := guiSHA + "  wisp-gui_darwin_arm64\n" + cliSHA + "  wisp_darwin_arm64\n"
+	if err := os.WriteFile(sums, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "Formula", "wisp.rb") // nested dir must be created
@@ -29,7 +32,7 @@ func TestRunWritesFormulaFromChecksums(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, w := range []string{`version "1.4.0"`, `sha256 "bbb"`, "class Wisp < Formula"} {
+	for _, w := range []string{`version "1.4.0"`, `sha256 "` + cliSHA + `"`, "class Wisp < Formula"} {
 		if !strings.Contains(string(got), w) {
 			t.Errorf("formula missing %q:\n%s", w, got)
 		}
@@ -57,5 +60,26 @@ func TestRunRejectsInjection(t *testing.T) {
 	}
 	if _, statErr := os.Stat(out); statErr == nil {
 		t.Fatal("a rejected formula must not be written")
+	}
+}
+
+func TestRunRejectsRubyMetacharacters(t *testing.T) {
+	sha := strings.Repeat("ab", 32)
+	cases := map[string]string{
+		"backslash":     `https://example/a\b`,
+		"interpolation": "https://example/#{evil}",
+	}
+	for name, url := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := run([]string{
+				"-version", "1.0.0",
+				"-url", url,
+				"-sha", sha,
+				"-out", filepath.Join(t.TempDir(), "wisp.rb"),
+			})
+			if err == nil {
+				t.Fatalf("expected url %q to be rejected", url)
+			}
+		})
 	}
 }

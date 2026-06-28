@@ -99,32 +99,43 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Render Formula/wisp.rb from the release checksums
+      - name: Render and commit Formula/wisp.rb
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="${GITHUB_REF_NAME#v}"
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/wisp_darwin_arm64"
           gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
             --pattern "wisp_${version}_checksums.txt" --output checksums.txt
-          go run ./cmd/genbrew \
-            -version "${version}" \
-            -url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/wisp_darwin_arm64" \
-            -checksums checksums.txt \
-            -out Formula/wisp.rb
-          rm -f checksums.txt
-      - name: Commit the updated formula
-        run: |
-          version="${GITHUB_REF_NAME#v}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/wisp.rb
-          if git diff --cached --quiet; then
-            echo "formula already up to date"
-            exit 0
+
+          # Regenerate the formula on top of the freshest origin/main each
+          # attempt and push; if a concurrent push lands first, reset to the new
+          # tip and retry. Regenerating wholesale means there is never a merge to
+          # resolve — the formula is a pure function of this release's assets.
+          pushed=
+          for attempt in 1 2 3 4 5; do
+            git fetch --quiet origin main
+            git reset --quiet --hard origin/main
+            go run ./cmd/genbrew -version "${version}" -url "${url}" \
+              -checksums checksums.txt -out Formula/wisp.rb
+            git add Formula/wisp.rb
+            if git diff --cached --quiet; then
+              echo "formula already up to date"
+              pushed=1
+              break
+            fi
+            git commit -m "brew: update formula to ${version}"
+            if git push origin HEAD:main; then
+              pushed=1
+              break
+            fi
+            echo "push lost a race (attempt ${attempt}); retrying on the new tip"
+            sleep 3
+          done
+          rm -f checksums.txt
+          if [ -z "${pushed}" ]; then
+            echo "::error::could not update the Homebrew formula after retries" >&2
+            exit 1
           fi
-          git commit -m "brew: update formula to ${version}"
-          # Rebase onto any commits that landed on main since checkout so the
-          # push is a fast-forward; the formula is regenerated wholesale so there
-          # is nothing to conflict on.
-          git pull --rebase origin main
-          git push origin HEAD:main
