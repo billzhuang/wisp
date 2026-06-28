@@ -127,12 +127,13 @@ func startWisp(t *testing.T, extraEnv []string, args ...string) *session {
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	cmd.Env = append(cmd.Env, extraEnv...)
 
-	master, err := pty.Start(cmd)
+	// StartWithSize sets the window size atomically before the child starts, so
+	// wisp's stdio frontend reads the intended 80x24 at startup rather than
+	// racing a Setsize that lands after it has already queried the terminal.
+	master, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
-		t.Fatalf("pty.Start wisp: %v", err)
+		t.Fatalf("pty.StartWithSize wisp: %v", err)
 	}
-	// Set an initial window size so the stdio frontend reports sane dimensions.
-	_ = pty.Setsize(master, &pty.Winsize{Rows: 24, Cols: 80})
 
 	s := &session{t: t, cmd: cmd, master: master}
 

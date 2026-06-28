@@ -2,8 +2,9 @@
 #
 # autotest.sh — wisp's one-command test gauntlet.
 #
-# This is the single command the Claude Code auto-test loop runs each iteration
-# (and what CI's e2e job runs). It exercises wisp from the inside out:
+# This is the single command the Claude Code auto-test loop runs each iteration.
+# (CI runs the same steps as separate workflow jobs rather than this script.)
+# It exercises wisp from the inside out:
 #
 #   1. gofmt    — formatting is clean (CI rejects unformatted code)
 #   2. go vet   — static checks pass
@@ -17,9 +18,10 @@
 #
 # Step 5 is the part that proves "wisp works as a terminal" rather than just
 # "wisp's packages have correct unit behavior". If tailnet credentials are
-# present in the environment (WISP_E2E_TS_AUTHKEY / WISP_E2E_HOST /
-# WISP_E2E_USER, plus WISP_E2E_SSH_KEY or WISP_E2E_PASSWORD), step 5 additionally
-# runs a live test through the real tsnet path; otherwise that one test skips.
+# present in the environment (WISP_E2E_TS_CLIENT_SECRET / WISP_E2E_TS_TAGS /
+# WISP_E2E_HOST / WISP_E2E_USER, plus WISP_E2E_SSH_KEY or WISP_E2E_PASSWORD),
+# step 5 additionally runs a live test through the real tsnet path (authenticated
+# by an OAuth client secret, not a long-lived key); otherwise that test skips.
 #
 # Usage:
 #   scripts/autotest.sh              run the gauntlet once; exit non-zero on first failure
@@ -32,7 +34,7 @@
 
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || { echo "autotest: cannot cd to repo root" >&2; exit 1; }
 
 LOOP=0
 LOOP_MAX=0   # 0 == unbounded

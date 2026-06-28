@@ -131,7 +131,7 @@ scripts/autotest.sh --loop 20  # repeat at most 20 times
 To have Claude Code build-and-verify wisp on a loop, point its `/loop` at the
 script:
 
-```
+```text
 /loop 10m scripts/autotest.sh
 ```
 

@@ -121,8 +121,11 @@ func Parse(args []string, getenv func(string) string) (*Config, error) {
 
 	fs.StringVar(&c.Hostname, "hostname", "wisp", "tsnet node name advertised on the tailnet")
 	fs.StringVar(&c.StateDir, "state-dir", defStateDir, "directory persisting the embedded tsnet node identity")
-	fs.StringVar(&c.AuthKey, "authkey", getenv("TS_AUTHKEY"), "tsnet auth key (else interactive login URL)")
-	fs.StringVar(&c.ClientSecret, "client-secret", getenv("TS_CLIENT_SECRET"), "Tailscale OAuth client secret (tskey-client-…); mints a short-lived key, requires -tags")
+	// Secret-bearing flags default to empty, not getenv(...): flag.PrintDefaults
+	// echoes a non-empty default into `wisp -h`, which would leak the key/secret.
+	// Their env fallback is applied after Parse instead (see below).
+	fs.StringVar(&c.AuthKey, "authkey", "", "tsnet auth key (else interactive login URL; env TS_AUTHKEY)")
+	fs.StringVar(&c.ClientSecret, "client-secret", "", "Tailscale OAuth client secret (tskey-client-…); mints a short-lived key, requires -tags (env TS_CLIENT_SECRET)")
 	var tags string
 	fs.StringVar(&tags, "tags", getenv("TS_TAGS"), "comma-separated ACL tags to advertise (e.g. tag:ci); required with -client-secret")
 	fs.StringVar(&c.ControlURL, "control-url", getenv("TS_CONTROL_URL"), "coordination server URL (Headscale/self-hosted)")
@@ -140,6 +143,14 @@ func Parse(args []string, getenv func(string) string) (*Config, error) {
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
+	}
+	// Env fallback for the secret-bearing flags, applied here (not as a flag
+	// default) so the secret never appears in `wisp -h`. An explicit flag wins.
+	if c.AuthKey == "" {
+		c.AuthKey = getenv("TS_AUTHKEY")
+	}
+	if c.ClientSecret == "" {
+		c.ClientSecret = getenv("TS_CLIENT_SECRET")
 	}
 	c.Tags = splitTags(tags)
 	return c, nil
