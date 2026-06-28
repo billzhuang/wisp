@@ -47,6 +47,43 @@ jobs:
       - name: Build (default, pure Go)
         run: go build ./...
 
+  e2e:
+    name: e2e (real binary, black-box)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Drives the actual compiled wisp binary over a PTY against an in-process
+      # SSH server (internal/e2e) — the test that proves the shipped terminal
+      # connects, renders, and forwards keystrokes, not just that its packages
+      # pass unit tests. -count=1 disables the test cache so it always runs.
+      #
+      # The WISP_E2E_* env wires optional tailnet credentials from repo secrets
+      # into the suite's live test (internal/e2e/tailnet_test.go). When the
+      # secrets are unset — e.g. on fork PRs, where secrets are unavailable —
+      # that one test skips and the hermetic localhost tests still run. When
+      # they are set, wisp is additionally driven through the real tsnet path.
+      - name: E2E (black-box, real binary)
+        env:
+          WISP_E2E_TS_AUTHKEY: ${{ secrets.WISP_E2E_TS_AUTHKEY }}
+          WISP_E2E_HOST: ${{ secrets.WISP_E2E_HOST }}
+          WISP_E2E_USER: ${{ secrets.WISP_E2E_USER }}
+          WISP_E2E_PASSWORD: ${{ secrets.WISP_E2E_PASSWORD }}
+          WISP_E2E_CONTROL_URL: ${{ secrets.WISP_E2E_CONTROL_URL }}
+        run: |
+          # An SSH private key, if provided as a secret, is written to a file and
+          # passed to wisp via -i (public-key auth is preferred over a password).
+          if [ -n "${{ secrets.WISP_E2E_SSH_KEY }}" ]; then
+            install -m 600 /dev/null "$RUNNER_TEMP/wisp_e2e_key"
+            printf '%s\n' "${{ secrets.WISP_E2E_SSH_KEY }}" > "$RUNNER_TEMP/wisp_e2e_key"
+            export WISP_E2E_SSH_KEY="$RUNNER_TEMP/wisp_e2e_key"
+          fi
+          go test -tags e2e -count=1 -v ./internal/e2e/...
+
   gui-linux:
     name: gui (ebiten, Linux smoke)
     runs-on: ubuntu-latest

@@ -193,6 +193,21 @@ The default build needs only the Go toolchain. The `-tags ebiten` and
   PTY, run a shell/command, pipe the output through the terminal engine, and
   assert the rendered grid — exercising the whole network → SSH → PTY → engine
   pipeline without a tailnet or a display.
+- **End-to-end (black-box):** `internal/e2e/` drives the *actual compiled
+  binary* the way a person does — launched as its own process with a real PTY,
+  connected to the test SSH server, typed into, and asserted against the bytes
+  it paints back. This is the test that proves the shipped terminal works, not
+  just that its packages pass unit tests. It is gated behind `-tags e2e`; an
+  opt-in `TestLiveTailnet` additionally drives the real **tsnet** path when
+  tailnet credentials are present. See [docs/TESTING.md](docs/TESTING.md).
+
+One command runs the whole gauntlet (fmt, vet, race tests, build, e2e) and is
+what the Claude Code auto-test loop calls each iteration:
+
+```sh
+scripts/autotest.sh            # run once; non-zero exit == wisp is broken
+scripts/autotest.sh --loop     # repeat until a step fails (surfaces flakiness)
+```
 
 ## Layout
 
@@ -208,6 +223,9 @@ internal/config/         flags + env → validated Config
 internal/update/         GitHub Releases self-update (check, verify, replace)
 internal/version/        build version (ldflags-injected by CD)
 internal/testutil/sshserver in-process SSH server for tests
-.github/workflows/       ci (build/test/vet) + release (tag → binaries + checksums)
+internal/e2e/            black-box tests of the real binary over a PTY (-tags e2e)
+scripts/autotest.sh      one-command test gauntlet for the auto-test loop
+.github/workflows/       ci (build/test/vet/e2e) + release (tag → binaries + checksums)
 docs/BUILD.md            libghostty (Zig) + Ebitengine toolchain notes
+docs/TESTING.md          test scopes, the e2e harness, and the auto-test loop
 ```
