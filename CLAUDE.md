@@ -5,11 +5,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What wisp is
 
 wisp is a Tailscale-native terminal emulator. It embeds a **userspace Tailscale
-node (tsnet)** in the binary and SSHes to tailnet hosts with no Tailscale app,
-daemon, or system client installed — the terminal *is* the tailnet node. The
-default build is pure Go (tsnet + a pure-Go VT engine + a stdio frontend); the
-heavy components (libghostty VT engine, Ebitengine GPU frontend) live behind
-build tags so the default build always compiles with only the Go toolchain.
+node (tsnet)** in the binary and runs a **local shell** whose network egress is
+routed through the tailnet — with no Tailscale app, daemon, or system client
+installed, and without touching the host's DNS or routing. The terminal *is* the
+tailnet node, so tools run in it (curl, git, Claude Code, Codex) reach tailnet
+and subnet-router resources. The default build is pure Go (tsnet + a pure-Go VT
+engine + a stdio frontend); the heavy components (libghostty VT engine,
+Ebitengine GPU frontend) live behind build tags so the default build always
+compiles with only the Go toolchain.
+
+Note on history: wisp originally *SSHed* to a remote tailnet host. It was
+reworked to a local shell + egress proxy so users don't have to install the
+system Tailscale client (which adds a TUN device and rewrites DNS/routing,
+conflicting with corporate VPN/DNS). There is no SSH code anymore.
 
 ## Commands
 
@@ -52,9 +60,10 @@ replaced and tested in isolation, and the data flow is one direction down,
 events back up:
 
 ```
-frontend (render.Frontend)  ──input──▶  Controller ──▶ SSH session ──▶ tsnet Dialer ──▶ tailnet host:22
-    ▲ draws grid each frame                                                                    │
-    └──── terminal.Engine ◀──── remote PTY bytes ◀──────────────────────────────────────────┘
+frontend (render.Frontend)  ──input──▶  Controller ──▶ localpty ($SHELL on a PTY)
+    ▲ draws grid each frame                                  │ ALL_PROXY/HTTP(S)_PROXY in its env
+    └──── terminal.Engine ◀──── PTY bytes ◀──────────────────┘ point at ▼
+                                              proxy (SOCKS5+HTTP, 127.0.0.1) ──▶ tsnet Dialer ──▶ tailnet
 ```
 
 The recurring pattern across the codebase: **a small interface, a pure-Go
@@ -64,19 +73,31 @@ threading a concrete type through.
 
 | Seam | Package | Interface | Default | Alternate |
 |---|---|---|---|---|
-| Tailnet transport | `internal/transport` | `Dialer` | `TSNetDialer` (tsnet) | `NetDialer` (`-direct`, tests) |
-| SSH session | `internal/sshx` | — | `x/crypto/ssh` over the dialer's `net.Conn` | |
+| Tailnet transport | `internal/transport` | `Dialer` | `TSNetDialer` (tsnet) | `NetDialer` (`-no-tailnet`, tests) |
+| Egress proxy | `internal/proxy` | — | SOCKS5 + HTTP, every CONNECT dialed through `Dialer` | |
+| Local shell | `internal/localpty` | — | `$SHELL` in a PTY (`creack/pty`) | |
 | Terminal engine | `internal/terminal` | `Engine` (an `io.Writer`) | pure-Go VT parser | libghostty (`-tags libghostty`) |
 | Frontend | `internal/render` | `Frontend` | stdio passthrough | Ebitengine (`-tags ebiten`); `Headless` (tests) |
 | Session controller | `internal/app` | `render.Controller` | `*Controller` (one session) | `*Tabs` (N sessions, GUI only) |
 
 Key boundaries:
 
-- **`transport.Dialer`** hands back a raw `net.Conn`. `sshx` layers SSH on top
-  and neither it nor any test cares whether the conn came from a WireGuard
-  tunnel or a plain TCP socket. This is why tests run hermetically: they swap in
-  `NetDialer` against an in-process SSH server.
-- **`terminal.Engine` is an `io.Writer`**, so a session's stdout copies straight
+- **`transport.Dialer`** hands back a raw `net.Conn`. The `proxy` layers SOCKS5
+  and HTTP on top and neither it nor any test cares whether the conn came from a
+  WireGuard tunnel or a plain TCP socket. This is why tests run hermetically:
+  they swap in `NetDialer` (the same transport `-no-tailnet` uses).
+- **The proxy is the bridge tsnet needs.** A userspace stack can't transparently
+  capture other programs' traffic (no TUN), so `main` injects
+  `ALL_PROXY`/`HTTP_PROXY`/`HTTPS_PROXY` (plus a `WISP=1` marker) into the
+  shell's environment, pointing at the proxy's loopback address. One listener
+  serves both protocols, distinguished by the first byte (`0x05` → SOCKS5, else
+  HTTP), so the one address works as both `http://` and `socks5h://`. MagicDNS
+  names resolve through `Dialer.Dial`, not local DNS.
+- **`localpty.Session`** runs the shell on a PTY and exposes
+  `Stdout`/`Input`/`Resize`/`Wait`/`Close`. Its `Stdout` reader translates the
+  Linux PTY `EIO`-on-child-exit into a clean `io.EOF` so frontends see normal
+  end-of-stream.
+- **`terminal.Engine` is an `io.Writer`**, so the shell's stdout copies straight
   into it with `io.Copy`. A frontend reads `Engine.Snapshot()` (a caller-owned
   grid copy) each frame while the engine keeps mutating concurrently.
 - **`render.Controller`** is the *subset* of `*app.Controller` a frontend needs
@@ -89,8 +110,9 @@ Key boundaries:
   — the GUI; stdio/headless stay single-session.
 
 `cmd/wisp/main.go` is the only place all of this is wired together: parse config
-→ build dialer → build host-key callback + auth → `app.Dial` → pick engine +
-frontend → `frontend.Run`. Read it first to orient.
+→ build dialer (tsnet, or `NetDialer` under `-no-tailnet`) → start the proxy →
+build the proxy-augmented child env → `app.NewLocal` + `Start` the shell → pick
+engine + frontend → `frontend.Run`. Read it first to orient.
 
 ## Conventions and non-obvious invariants
 
@@ -108,9 +130,11 @@ frontend → `frontend.Run`. Read it first to orient.
   `tskey-client-…` secret is exchanged for a short-lived tagged key at startup
   (`internal/transport/tsnet.go`). OAuth-minted nodes *must* be tagged, so
   `-tags` is required with `-client-secret` (enforced in `Config.Validate`).
-- **Host keys are trust-on-first-use**: unknown hosts are recorded in
-  `known_hosts`, a *changed* key is always rejected as a possible MITM.
-  `-insecure-host-key` exists for tests only.
+- **The shell is launched as a login shell**: `main` sets `argv[0]` to
+  `-<base>` (e.g. `-zsh`) so the user's profile is sourced. `-command` runs
+  `$SHELL -c <cmd>` instead. `-no-tailnet` skips tsnet and backs the proxy with
+  the OS network stack — used by the hermetic e2e tests and for a plain local
+  terminal; tailnet-only resources are then unreachable.
 - **Self-update is flavor-aware.** `cmd/wisp/flavor_*.go` set `assetFlavor`
   per build tag (`wisp` for CLI, `wisp-gui` for the Ebitengine build) so a GUI
   install only ever upgrades to a GUI asset. `internal/update` downloads the
@@ -126,14 +150,17 @@ frontend → `frontend.Run`. Read it first to orient.
 Three widening scopes, all hermetic except one opt-in:
 
 - **Unit** (`internal/*/*_test.go`) — each layer alone; Go toolchain only.
-- **Integration** (`internal/app/integration_test.go`, `internal/sshx/sshx_test.go`)
-  — the layers *compose*: `NetDialer` → SSH → PTY → engine → grid, asserted
-  against the rendered snapshot, via the in-process `internal/testutil/sshserver`.
+  Includes the egress proxy (HTTP CONNECT + SOCKS5 against a local echo server)
+  and the local PTY session.
+- **Integration** (`internal/app/integration_test.go`) — the layers *compose*:
+  a real local shell → PTY → engine → grid, asserted against the rendered
+  snapshot.
 - **End-to-end** (`internal/e2e/`, `-tags e2e`) — compiles the real binary,
-  attaches a PTY, connects to the test SSH server, types, and asserts the painted
-  bytes. This is the test that proves "wisp works as a terminal." An opt-in
-  `TestLiveTailnet` additionally drives the real tsnet path when `WISP_E2E_*`
-  credentials are present (it *skips* otherwise — e.g. on fork PRs).
+  attaches a PTY, launches a local shell with `-no-tailnet`, types, and asserts
+  the painted bytes (including that the proxy env was injected). This is the test
+  that proves "wisp works as a terminal." An opt-in `TestLiveTailnet` drives the
+  real tsnet path — `curl`-ing a tailnet resource through the embedded proxy —
+  when `WISP_E2E_*` credentials are present (it *skips* otherwise, e.g. fork PRs).
 
 CI (`.github/workflows/ci.yml`) runs these as separate jobs: pure-Go test/race,
 black-box e2e, an Ebitengine Linux smoke build under `xvfb`, and a

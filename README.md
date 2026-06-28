@@ -209,9 +209,9 @@ The default build needs only the Go toolchain. The `-tags ebiten` and
 [docs/BUILD.md](docs/BUILD.md).
 
 New to the codebase? [CLAUDE.md](CLAUDE.md) is a one-page orientation — the
-common commands plus the interface-seam architecture (`Dialer` → SSH → `Engine`
-→ `Frontend`) that the rest of this README expands on. It is written for Claude
-Code, but reads as a contributor quickstart for anyone.
+common commands plus the interface-seam architecture (`Dialer` → `proxy` →
+`localpty` → `Engine` → `Frontend`) that the rest of this README expands on. It
+is written for Claude Code, but reads as a contributor quickstart for anyone.
 
 ## Tests
 
