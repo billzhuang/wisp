@@ -109,21 +109,23 @@ func launch(t *testing.T, handler sshserver.Handler, args ...string) (*session, 
 		"-host", srv.Addr(),
 		"-user", "tester",
 	}
-	return startWisp(t, append(base, args...)...), srv
+	return startWisp(t, nil, append(base, args...)...), srv
 }
 
-// startWisp launches the compiled binary with the given args on a fresh PTY and
-// returns a session that drains and exposes its terminal output. It is the
-// low-level spawn shared by the hermetic localhost tests (via launch) and the
-// opt-in live tailnet test (which needs a different flag set: real tsnet, no
-// -direct).
-func startWisp(t *testing.T, args ...string) *session {
+// startWisp launches the compiled binary with the given args (and any extra
+// environment) on a fresh PTY and returns a session that drains and exposes its
+// terminal output. It is the low-level spawn shared by the hermetic localhost
+// tests (via launch) and the opt-in live tailnet test (which needs a different
+// flag set — real tsnet, no -direct — and passes its OAuth secret through the
+// environment rather than argv so it never lands in a process listing).
+func startWisp(t *testing.T, extraEnv []string, args ...string) *session {
 	t.Helper()
 
 	cmd := exec.Command(wispBin, args...)
 	// TERM makes the remote pty-req well-formed; keep the inherited env so the
-	// process resolves runtime deps and (for the live test) any TS_* vars.
+	// process resolves runtime deps, plus any caller-supplied secrets.
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = append(cmd.Env, extraEnv...)
 
 	master, err := pty.Start(cmd)
 	if err != nil {

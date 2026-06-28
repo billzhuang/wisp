@@ -87,6 +87,12 @@ wisp -host dev-box -user alice
 TS_AUTHKEY=tskey-... wisp -host dev-box -user alice \
   -control-url https://headscale.example.com -ephemeral
 
+# Headless/CI login the modern way — an OAuth client secret (scoped, revocable)
+# instead of a long-lived auth key. wisp mints a short-lived key at startup; an
+# OAuth-authenticated node must be tagged, so -tags is required:
+TS_CLIENT_SECRET=tskey-client-... wisp -host dev-box -user alice \
+  -tags tag:ci -ephemeral
+
 # Bypass tsnet entirely for a directly reachable host (no Tailscale):
 wisp -direct -host 10.0.0.5 -user alice
 ```

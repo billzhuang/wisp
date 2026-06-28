@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Config is the fully-resolved runtime configuration.
@@ -28,6 +29,15 @@ type Config struct {
 	StateDir string
 	// AuthKey pre-authenticates the node; empty means interactive login URL.
 	AuthKey string
+	// ClientSecret is a Tailscale OAuth client secret (tskey-client-…). When set,
+	// the node mints its own short-lived auth key at startup instead of using a
+	// long-lived AuthKey — the modern, revocable way to authenticate headless
+	// nodes (CI, servers). OAuth-minted nodes must be tagged, so Tags is
+	// required alongside it.
+	ClientSecret string
+	// Tags are the ACL tags advertised by the node (e.g. "tag:ci"). Required
+	// when authenticating via ClientSecret; optional with a tagged AuthKey.
+	Tags []string
 	// ControlURL overrides the coordination server (Headscale, self-hosted).
 	ControlURL string
 	// Ephemeral registers the node as ephemeral.
@@ -78,6 +88,11 @@ func (c *Config) Validate() error {
 		if c.StateDir == "" {
 			return errors.New("config: -state-dir is required unless -direct (node identity must persist)")
 		}
+		// OAuth-minted nodes must be tagged: the control plane assigns identity
+		// from the tag, so a client secret without tags can't register.
+		if c.ClientSecret != "" && len(c.Tags) == 0 {
+			return errors.New("config: -tags is required with -client-secret (OAuth-authenticated nodes must be tagged)")
+		}
 	}
 	if !c.InsecureHostKey && c.KnownHosts == "" {
 		return errors.New("config: -known-hosts is required unless -insecure-host-key")
@@ -107,6 +122,9 @@ func Parse(args []string, getenv func(string) string) (*Config, error) {
 	fs.StringVar(&c.Hostname, "hostname", "wisp", "tsnet node name advertised on the tailnet")
 	fs.StringVar(&c.StateDir, "state-dir", defStateDir, "directory persisting the embedded tsnet node identity")
 	fs.StringVar(&c.AuthKey, "authkey", getenv("TS_AUTHKEY"), "tsnet auth key (else interactive login URL)")
+	fs.StringVar(&c.ClientSecret, "client-secret", getenv("TS_CLIENT_SECRET"), "Tailscale OAuth client secret (tskey-client-…); mints a short-lived key, requires -tags")
+	var tags string
+	fs.StringVar(&tags, "tags", getenv("TS_TAGS"), "comma-separated ACL tags to advertise (e.g. tag:ci); required with -client-secret")
 	fs.StringVar(&c.ControlURL, "control-url", getenv("TS_CONTROL_URL"), "coordination server URL (Headscale/self-hosted)")
 	fs.BoolVar(&c.Ephemeral, "ephemeral", false, "register the node as ephemeral")
 
@@ -123,7 +141,22 @@ func Parse(args []string, getenv func(string) string) (*Config, error) {
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
+	c.Tags = splitTags(tags)
 	return c, nil
+}
+
+// splitTags turns a comma-separated tag list into a trimmed, empty-free slice.
+func splitTags(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, t := range strings.Split(s, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // MustHome returns the user home dir or panics; used to print defaults in help.

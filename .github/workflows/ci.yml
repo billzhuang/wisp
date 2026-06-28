@@ -63,13 +63,24 @@ jobs:
       # pass unit tests. -count=1 disables the test cache so it always runs.
       #
       # The WISP_E2E_* env wires optional tailnet credentials from repo secrets
-      # into the suite's live test (internal/e2e/tailnet_test.go). When the
-      # secrets are unset — e.g. on fork PRs, where secrets are unavailable —
-      # that one test skips and the hermetic localhost tests still run. When
-      # they are set, wisp is additionally driven through the real tsnet path.
+      # into the suite's live test (internal/e2e/tailnet_test.go). Auth is a
+      # Tailscale OAuth client secret — NOT a long-lived auth key: wisp's tsnet
+      # exchanges it for a short-lived, tagged key at startup. The OAuth client
+      # is scoped to a tag and revocable from the admin console. When the secrets
+      # are unset — e.g. on fork PRs, where secrets are unavailable — the live
+      # test skips and the hermetic localhost tests still run. When they are set,
+      # wisp is additionally driven through the real tsnet path.
+      #
+      # To enable, add these repo secrets (Settings → Secrets → Actions):
+      #   WISP_E2E_TS_CLIENT_SECRET  OAuth client secret (tskey-client-…), auth_keys scope, owns the tag
+      #   WISP_E2E_TS_TAGS           tag(s) the client owns, e.g. tag:ci
+      #   WISP_E2E_HOST / WISP_E2E_USER   a reachable tailnet host + login
+      #   WISP_E2E_SSH_KEY or WISP_E2E_PASSWORD   SSH auth to that host
+      #   WISP_E2E_CONTROL_URL       (optional) Headscale/self-hosted control plane
       - name: E2E (black-box, real binary)
         env:
-          WISP_E2E_TS_AUTHKEY: ${{ secrets.WISP_E2E_TS_AUTHKEY }}
+          WISP_E2E_TS_CLIENT_SECRET: ${{ secrets.WISP_E2E_TS_CLIENT_SECRET }}
+          WISP_E2E_TS_TAGS: ${{ secrets.WISP_E2E_TS_TAGS }}
           WISP_E2E_HOST: ${{ secrets.WISP_E2E_HOST }}
           WISP_E2E_USER: ${{ secrets.WISP_E2E_USER }}
           WISP_E2E_PASSWORD: ${{ secrets.WISP_E2E_PASSWORD }}

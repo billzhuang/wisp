@@ -169,12 +169,14 @@ func buildDialer(ctx context.Context, cfg *config.Config) (transport.Dialer, err
 		return transport.NewNetDialer(), nil
 	}
 	d, err := transport.NewTSNetDialer(transport.TSConfig{
-		Hostname:   cfg.Hostname,
-		StateDir:   cfg.StateDir,
-		AuthKey:    cfg.AuthKey,
-		ControlURL: cfg.ControlURL,
-		Ephemeral:  cfg.Ephemeral,
-		AuthLog:    os.Stderr, // surface the interactive login URL on first run
+		Hostname:     cfg.Hostname,
+		StateDir:     cfg.StateDir,
+		AuthKey:      cfg.AuthKey,
+		ClientSecret: cfg.ClientSecret,
+		Tags:         cfg.Tags,
+		ControlURL:   cfg.ControlURL,
+		Ephemeral:    cfg.Ephemeral,
+		AuthLog:      os.Stderr, // surface the interactive login URL on first run
 	})
 	if err != nil {
 		return nil, err

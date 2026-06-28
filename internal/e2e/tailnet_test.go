@@ -17,35 +17,43 @@ import (
 // cleanly otherwise. In CI those come from GitHub Action secrets; locally,
 // export them before `go test -tags e2e`.
 //
+// Authentication uses a Tailscale OAuth client secret, not a long-lived auth
+// key. wisp's tsnet exchanges the secret for a short-lived, tagged auth key at
+// startup (see internal/transport/tsnet.go), so nothing durable is stored — the
+// OAuth client is scoped to a tag and revocable from the admin console, which is
+// the modern recommended way to authenticate headless nodes.
+//
 // Required env:
 //
-//	WISP_E2E_TS_AUTHKEY   tsnet auth key (tskey-...) — registers the ephemeral node
-//	WISP_E2E_HOST         destination host on the tailnet (host or host:port)
-//	WISP_E2E_USER         remote login user
+//	WISP_E2E_TS_CLIENT_SECRET   OAuth client secret (tskey-client-…), auth_keys scope
+//	WISP_E2E_TS_TAGS            comma-separated ACL tags the client owns (e.g. tag:ci)
+//	WISP_E2E_HOST               destination host on the tailnet (host or host:port)
+//	WISP_E2E_USER               remote login user
 //
-// One auth method, in precedence order:
+// One SSH auth method, in precedence order:
 //
-//	WISP_E2E_SSH_KEY      path to a private key for public-key auth (preferred), or
-//	WISP_E2E_PASSWORD     password, typed into the interactive prompt over the PTY
+//	WISP_E2E_SSH_KEY            path to a private key for public-key auth (preferred), or
+//	WISP_E2E_PASSWORD           password, typed into the interactive prompt over the PTY
 //
 // Optional env:
 //
-//	WISP_E2E_CONTROL_URL  coordination server (Headscale/self-hosted control plane)
+//	WISP_E2E_CONTROL_URL        coordination server (Headscale/self-hosted control plane)
 //
 // The test runs a single remote command via -command and asserts a unique token
 // round-trips back through tsnet -> SSH -> engine -> frontend to the terminal.
 func TestLiveTailnet(t *testing.T) {
-	authKey := os.Getenv("WISP_E2E_TS_AUTHKEY")
+	clientSecret := os.Getenv("WISP_E2E_TS_CLIENT_SECRET")
+	tags := os.Getenv("WISP_E2E_TS_TAGS")
 	host := os.Getenv("WISP_E2E_HOST")
 	user := os.Getenv("WISP_E2E_USER")
-	if authKey == "" || host == "" || user == "" {
-		t.Skip("live tailnet test skipped: set WISP_E2E_TS_AUTHKEY, WISP_E2E_HOST, WISP_E2E_USER to enable")
+	if clientSecret == "" || tags == "" || host == "" || user == "" {
+		t.Skip("live tailnet test skipped: set WISP_E2E_TS_CLIENT_SECRET, WISP_E2E_TS_TAGS, WISP_E2E_HOST, WISP_E2E_USER to enable")
 	}
 
 	keyFile := os.Getenv("WISP_E2E_SSH_KEY")
 	password := os.Getenv("WISP_E2E_PASSWORD")
 	if keyFile == "" && password == "" {
-		t.Fatal("live tailnet test enabled but no auth provided: set WISP_E2E_SSH_KEY or WISP_E2E_PASSWORD")
+		t.Fatal("live tailnet test enabled but no SSH auth provided: set WISP_E2E_SSH_KEY or WISP_E2E_PASSWORD")
 	}
 
 	// A unique token so we match the command's *output*, not the command echo.
@@ -64,7 +72,7 @@ func TestLiveTailnet(t *testing.T) {
 		"-ephemeral", // node disappears from the tailnet when wisp exits
 		"-hostname", "wisp-e2e",
 		"-state-dir", stateDir,
-		"-authkey", authKey,
+		"-tags", tags, // OAuth-minted nodes must be tagged
 		"-known-hosts", knownHosts,
 		"-host", host,
 		"-user", user,
@@ -77,16 +85,19 @@ func TestLiveTailnet(t *testing.T) {
 		args = append(args, "-i", keyFile)
 	}
 
-	s := startWisp(t, args...)
+	// Pass the OAuth secret via the environment (TS_CLIENT_SECRET), not argv, so
+	// it never appears in a process listing. wisp reads it as -client-secret's
+	// default.
+	s := startWisp(t, []string{"TS_CLIENT_SECRET=" + clientSecret}, args...)
 
 	if keyFile == "" && password != "" {
 		// The interactive prompt reads one line from the PTY.
 		s.write(password + "\n")
 	}
 
-	// tsnet bring-up + tailnet dial is slower than a localhost connection;
-	// allow generous headroom before declaring failure.
-	out := s.waitFor(token, 90*time.Second)
+	// tsnet bring-up (OAuth key mint + tailnet dial) is slower than a localhost
+	// connection; allow generous headroom before declaring failure.
+	out := s.waitFor(token, 120*time.Second)
 	if !strings.Contains(out, token) {
 		t.Fatalf("expected live remote output to contain %q; got:\n%s", token, sanitize(out))
 	}
