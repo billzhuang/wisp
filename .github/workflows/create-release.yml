@@ -1,0 +1,80 @@
+name: create release
+
+# Trigger a release without manually tagging. Resolves the next version (either
+# explicit or by bumping the last tag), generates a changelog from commits since
+# that tag, creates an annotated git tag whose body is the changelog, then pushes
+# the tag — which triggers the build/publish job in release.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.2.3, no "v"). Leave blank to auto-bump.'
+        required: false
+        type: string
+      bump:
+        description: 'Version component to bump when version is blank'
+        required: false
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need full history for git describe and git log
+
+      - name: Resolve version
+        id: ver
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUMP: ${{ inputs.bump }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            v="$INPUT_VERSION"
+            v="${v#v}"  # strip leading v if the user included one
+          else
+            last=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            last="${last#v}"
+            IFS='.' read -r ma mi pa <<< "$last"
+            case "$INPUT_BUMP" in
+              major) ma=$((ma+1)); mi=0; pa=0 ;;
+              minor) mi=$((mi+1)); pa=0 ;;
+              *)     pa=$((pa+1)) ;;   # patch (default)
+            esac
+            v="${ma}.${mi}.${pa}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v"    >> "$GITHUB_OUTPUT"
+
+      - name: Build changelog
+        run: |
+          last=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$last" ]; then
+            range="${last}..HEAD"
+            header="Changes since ${last}"
+          else
+            range="HEAD"
+            header="Initial release"
+          fi
+          {
+            printf '## %s\n\n' "$header"
+            git log "$range" --pretty='format:- %s (%h)' --no-merges
+            printf '\n'
+          } > /tmp/notes.md
+          echo "--- changelog preview ---"
+          cat /tmp/notes.md
+
+      - name: Create and push annotated tag
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.ver.outputs.tag }}" -F /tmp/notes.md
+          git push origin "${{ steps.ver.outputs.tag }}"
+          echo "Pushed ${{ steps.ver.outputs.tag }} — release.yml will now build and publish the release."
