@@ -1,9 +1,12 @@
 name: create release
 
-# Trigger a release without manually tagging. Resolves the next version (either
-# explicit or by bumping the last tag), generates a changelog from commits since
-# that tag, creates an annotated git tag whose body is the changelog, then pushes
-# the tag — which triggers the build/publish job in release.yml.
+# Trigger a release from the GitHub UI without manually tagging.
+# Self-contained: does NOT push a tag to trigger release.yml (pushing via
+# GITHUB_TOKEN would be silently ignored by GitHub Actions as a loop-prevention
+# measure). Instead it mirrors release.yml's jobs inline.
+#
+# Manual tag push (git tag vX.Y.Z && git push origin vX.Y.Z) still works via
+# release.yml — that path is unchanged.
 
 on:
   workflow_dispatch:
@@ -23,12 +26,18 @@ permissions:
   contents: write
 
 jobs:
-  tag:
+  # Resolve version and generate changelog on a fast ubuntu runner so the
+  # expensive macOS job can start with all inputs ready.
+  prepare:
+    name: resolve version + changelog
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag:     ${{ steps.ver.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # need full history for git describe and git log
+          fetch-depth: 0
 
       - name: Resolve version
         id: ver
@@ -38,7 +47,7 @@ jobs:
         run: |
           if [ -n "$INPUT_VERSION" ]; then
             v="$INPUT_VERSION"
-            v="${v#v}"  # strip leading v if the user included one
+            v="${v#v}"
           else
             last=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
             last="${last#v}"
@@ -46,7 +55,7 @@ jobs:
             case "$INPUT_BUMP" in
               major) ma=$((ma+1)); mi=0; pa=0 ;;
               minor) mi=$((mi+1)); pa=0 ;;
-              *)     pa=$((pa+1)) ;;   # patch (default)
+              *)     pa=$((pa+1)) ;;
             esac
             v="${ma}.${mi}.${pa}"
           fi
@@ -67,14 +76,118 @@ jobs:
             printf '## %s\n\n' "$header"
             git log "$range" --pretty='format:- %s (%h)' --no-merges
             printf '\n'
-          } > /tmp/notes.md
-          echo "--- changelog preview ---"
-          cat /tmp/notes.md
+          } > notes.md
+          cat notes.md
 
-      - name: Create and push annotated tag
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: notes.md
+
+  build:
+    name: build + publish (macOS Apple Silicon)
+    needs: prepare
+    runs-on: macos-15
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+
+      - name: Build GUI (Ebitengine, cgo)
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+          CGO_ENABLED: "1"
         run: |
-          git config user.name  "github-actions[bot]"
+          go build -trimpath -tags ebiten \
+            -ldflags "-s -w -X github.com/billzhuang/wisp/internal/version.Version=${VERSION}" \
+            -o "wisp-gui_darwin_arm64" ./cmd/wisp
+
+      - name: Build CLI (pure Go)
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/billzhuang/wisp/internal/version.Version=${VERSION}" \
+            -o "wisp_darwin_arm64" ./cmd/wisp
+
+      - name: Ad-hoc codesign
+        run: |
+          codesign --sign - --force --timestamp=none wisp-gui_darwin_arm64
+          codesign --sign - --force --timestamp=none wisp_darwin_arm64
+
+      - name: Checksums
+        run: shasum -a 256 wisp-gui_darwin_arm64 wisp_darwin_arm64 > "wisp_${VERSION}_checksums.txt"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --notes-file notes.md \
+            wisp-gui_darwin_arm64 \
+            wisp_darwin_arm64 \
+            "wisp_${VERSION}_checksums.txt"
+
+  brew:
+    name: update Homebrew tap formula
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Render and commit Formula/wisp.rb
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/wisp_darwin_arm64"
+          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern "wisp_${VERSION}_checksums.txt" --output checksums.txt
+          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.ver.outputs.tag }}" -F /tmp/notes.md
-          git push origin "${{ steps.ver.outputs.tag }}"
-          echo "Pushed ${{ steps.ver.outputs.tag }} — release.yml will now build and publish the release."
+          pushed=
+          for attempt in 1 2 3 4 5; do
+            git fetch --quiet origin main
+            git reset --quiet --hard origin/main
+            go run ./cmd/genbrew -version "${VERSION}" -url "${url}" \
+              -checksums checksums.txt -out Formula/wisp.rb
+            git add Formula/wisp.rb
+            if git diff --cached --quiet; then
+              echo "formula already up to date"
+              pushed=1
+              break
+            fi
+            git commit -m "brew: update formula to ${VERSION}"
+            if git push origin HEAD:main; then
+              pushed=1
+              break
+            fi
+            echo "push lost a race (attempt ${attempt}); retrying"
+            sleep 3
+          done
+          rm -f checksums.txt
+          if [ -z "${pushed}" ]; then
+            echo "::error::could not update the Homebrew formula after retries" >&2
+            exit 1
+          fi
