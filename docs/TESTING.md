@@ -9,9 +9,9 @@ together.
 
 | Scope | Where | What it proves | Needs |
 |---|---|---|---|
-| **Unit** | `internal/*/*_test.go` | each layer in isolation — VT parser, palette, config, transport, host-key TOFU, headless frontend | Go toolchain only |
-| **Integration (in-process)** | `internal/app/integration_test.go`, `internal/sshx/sshx_test.go` | the layers *compose*: NetDialer → SSH → PTY → engine → grid, asserted against the rendered snapshot | Go toolchain only |
-| **End-to-end (black-box)** | `internal/e2e/` | the *shipped binary* connects, renders, forwards keystrokes, and runs remote commands — driven over a real PTY exactly as a user would | Go toolchain + PTY (any Linux/macOS) |
+| **Unit** | `internal/*/*_test.go` | each layer in isolation — VT parser, palette, config, transport, egress proxy (HTTP CONNECT + SOCKS5), local PTY, headless frontend | Go toolchain only |
+| **Integration (in-process)** | `internal/app/integration_test.go` | the layers *compose*: local shell → PTY → engine → grid, asserted against the rendered snapshot | Go toolchain only |
+| **End-to-end (black-box)** | `internal/e2e/` | the *shipped binary* launches a shell, renders, forwards keystrokes, runs commands, and injects the proxy env — driven over a real PTY exactly as a user would | Go toolchain + PTY (any Linux/macOS) |
 
 The first two run under the default `go test ./...`. The third is gated behind
 the `e2e` build tag so the default run stays fast and hermetic.
@@ -19,17 +19,17 @@ the `e2e` build tag so the default run stays fast and hermetic.
 ## End-to-end: testing the real binary
 
 `internal/e2e` is the piece that catches what unit tests cannot — flag parsing,
-the interactive auth prompt, raw-mode terminal handling, and the stdio frontend
-all only exist in the assembled binary. The harness:
+proxy startup, raw-mode terminal handling, and the stdio frontend all only exist
+in the assembled binary. The harness:
 
 1. compiles `cmd/wisp` once (the default pure-Go / stdio flavor),
-2. starts the in-process test SSH server (`internal/testutil/sshserver`) on
-   localhost,
-3. launches `wisp -direct -insecure-host-key …` as its own process with a real
-   PTY for stdio (via `github.com/creack/pty`),
-4. types into the PTY and asserts on the bytes wisp paints back.
+2. launches `wisp -no-tailnet …` as its own process with a real PTY for stdio
+   (via `github.com/creack/pty`); `-no-tailnet` backs the egress proxy with the
+   OS network stack so no tsnet node or credentials are needed,
+3. types into the PTY and asserts on the bytes wisp paints back — including that
+   `$WISP` and `$ALL_PROXY` were injected into the shell's environment.
 
-No tailnet, display, or system sshd is involved, so it runs unchanged in CI.
+No tailnet or display is involved, so it runs unchanged in CI.
 
 ```sh
 go test -tags e2e -count=1 ./internal/e2e/...
@@ -37,10 +37,11 @@ go test -tags e2e -count=1 ./internal/e2e/...
 
 ### Live tailnet test (opt-in)
 
-`-direct` is what the hermetic tests use, and it bypasses wisp's whole reason
+`-no-tailnet` is what the hermetic tests use, and it bypasses wisp's whole reason
 for existing: the embedded **tsnet** node. `internal/e2e/tailnet_test.go` covers
-that real path, but it needs a tailnet and a reachable host, so it is opt-in —
-it **skips** unless credentials are in the environment.
+that real path — running `curl` in the shell against a tailnet-only URL *through
+the embedded proxy* — but it needs a tailnet and a reachable HTTP resource, so it
+is opt-in: it **skips** unless credentials are in the environment.
 
 Authentication uses a Tailscale **OAuth client secret**, *not* a long-lived auth
 key. wisp's tsnet exchanges the secret for a short-lived, tagged key at startup
@@ -52,16 +53,14 @@ nodes: the OAuth client is scoped to a tag and revocable from the admin console.
 |---|---|---|
 | `WISP_E2E_TS_CLIENT_SECRET` | yes | OAuth client secret (`tskey-client-…`) with the `auth_keys` scope |
 | `WISP_E2E_TS_TAGS` | yes | comma-separated ACL tag(s) the client owns, e.g. `tag:ci` |
-| `WISP_E2E_HOST` | yes | destination host on the tailnet (`host` or `host:port`) |
-| `WISP_E2E_USER` | yes | remote login user |
-| `WISP_E2E_SSH_KEY` | one of | path to a private key (public-key auth, preferred) |
-| `WISP_E2E_PASSWORD` | one of | password, typed into the prompt over the PTY |
+| `WISP_E2E_URL` | yes | an HTTP URL reachable only over the tailnet |
+| `WISP_E2E_EXPECT` | yes | a substring expected in that URL's response body |
 | `WISP_E2E_CONTROL_URL` | no | Headscale / self-hosted control plane URL |
 
 #### Creating the OAuth client (one-time)
 
 1. In the Tailscale admin console, define a tag (e.g. `tag:ci`) in your ACLs and
-   grant SSH to your test host for that tag.
+   grant the tag access to your test HTTP resource.
 2. **Settings → OAuth clients → Generate** a client with the **`auth_keys`**
    write scope, attached to `tag:ci`.
 3. Store the generated secret as `WISP_E2E_TS_CLIENT_SECRET`. Revoke it any time
@@ -92,9 +91,8 @@ fresh state dir → new, self-cleaning node per run.
 ```sh
 export WISP_E2E_TS_CLIENT_SECRET=tskey-client-...
 export WISP_E2E_TS_TAGS=tag:ci
-export WISP_E2E_HOST=dev-box
-export WISP_E2E_USER=alice
-export WISP_E2E_SSH_KEY=~/.ssh/id_ed25519
+export WISP_E2E_URL=http://dev-box.internal/health
+export WISP_E2E_EXPECT=ok
 go test -tags e2e -run TestLiveTailnet ./internal/e2e/...
 ```
 

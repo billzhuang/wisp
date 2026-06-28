@@ -11,33 +11,43 @@ func env(m map[string]string) func(string) string {
 
 func TestParseDefaults(t *testing.T) {
 	c, err := Parse(
-		[]string{"-host", "dev-box", "-hostname", "myterm", "-state-dir", "/s", "-known-hosts", "/kh"},
+		[]string{"-hostname", "myterm", "-state-dir", "/s"},
 		env(map[string]string{"USER": "alice"}),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.User != "alice" {
-		t.Fatalf("user = %q, want alice (from USER env)", c.User)
+	if c.Hostname != "myterm" {
+		t.Fatalf("hostname = %q, want myterm", c.Hostname)
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	if c.Addr() != "dev-box:22" {
-		t.Fatalf("addr = %q, want dev-box:22", c.Addr())
+	if c.ProxyAddr != "127.0.0.1:0" {
+		t.Fatalf("default proxy-addr = %q, want 127.0.0.1:0", c.ProxyAddr)
 	}
 }
 
-func TestAddrKeepsExplicitPort(t *testing.T) {
-	c := &Config{Host: "dev-box:2222"}
-	if c.Addr() != "dev-box:2222" {
-		t.Fatalf("addr = %q", c.Addr())
+func TestResolveShell(t *testing.T) {
+	// Explicit flag wins.
+	c := &Config{Shell: "/bin/zsh"}
+	if got := c.ResolveShell(env(map[string]string{"SHELL": "/bin/bash"})); got != "/bin/zsh" {
+		t.Fatalf("shell = %q, want /bin/zsh (flag)", got)
+	}
+	// Else $SHELL.
+	c = &Config{}
+	if got := c.ResolveShell(env(map[string]string{"SHELL": "/bin/bash"})); got != "/bin/bash" {
+		t.Fatalf("shell = %q, want /bin/bash ($SHELL)", got)
+	}
+	// Else /bin/sh.
+	if got := c.ResolveShell(env(nil)); got != "/bin/sh" {
+		t.Fatalf("shell = %q, want /bin/sh (fallback)", got)
 	}
 }
 
 func TestAuthKeyFromEnv(t *testing.T) {
 	c, err := Parse(
-		[]string{"-host", "h"},
+		[]string{},
 		env(map[string]string{"USER": "u", "TS_AUTHKEY": "tskey-abc", "TS_CONTROL_URL": "https://hs.example"}),
 	)
 	if err != nil {
@@ -53,7 +63,7 @@ func TestAuthKeyFromEnv(t *testing.T) {
 
 func TestClientSecretAndTagsFromEnv(t *testing.T) {
 	c, err := Parse(
-		[]string{"-host", "dev-box"},
+		[]string{},
 		env(map[string]string{
 			"USER":             "u",
 			"TS_CLIENT_SECRET": "tskey-client-xyz",
@@ -74,7 +84,7 @@ func TestClientSecretAndTagsFromEnv(t *testing.T) {
 
 func TestTagsFlagOverridesEnv(t *testing.T) {
 	c, err := Parse(
-		[]string{"-host", "h", "-tags", "tag:flag"},
+		[]string{"-tags", "tag:flag"},
 		env(map[string]string{"USER": "u", "TS_TAGS": "tag:env"}),
 	)
 	if err != nil {
@@ -86,7 +96,7 @@ func TestTagsFlagOverridesEnv(t *testing.T) {
 }
 
 func TestValidateClientSecretRequiresTags(t *testing.T) {
-	c := &Config{Host: "h", User: "u", Hostname: "wisp", StateDir: "/s", KnownHosts: "/kh", ClientSecret: "tskey-client-x"}
+	c := &Config{Hostname: "wisp", StateDir: "/s", ClientSecret: "tskey-client-x"}
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected error: -client-secret without -tags")
 	}
@@ -96,42 +106,24 @@ func TestValidateClientSecretRequiresTags(t *testing.T) {
 	}
 }
 
-func TestValidateClientSecretTagsSkippedWhenDirect(t *testing.T) {
-	// -direct bypasses tsnet entirely, so the tag rule doesn't apply.
-	c := &Config{Host: "h", User: "u", Direct: true, KnownHosts: "/kh", ClientSecret: "tskey-client-x"}
+func TestValidateClientSecretTagsSkippedWhenNoTailnet(t *testing.T) {
+	// -no-tailnet bypasses tsnet entirely, so the tag rule doesn't apply.
+	c := &Config{NoTailnet: true, ClientSecret: "tskey-client-x"}
 	if err := c.Validate(); err != nil {
-		t.Fatalf("validate (direct): %v", err)
-	}
-}
-
-func TestValidateRequiresHost(t *testing.T) {
-	c := &Config{User: "u", Hostname: "h", StateDir: "/s", KnownHosts: "/kh"}
-	if err := c.Validate(); err == nil {
-		t.Fatal("expected error for missing host")
+		t.Fatalf("validate (no-tailnet): %v", err)
 	}
 }
 
 func TestValidateTSNetRequirements(t *testing.T) {
-	// Without -direct, hostname + state-dir are mandatory.
-	c := &Config{Host: "h", User: "u", KnownHosts: "/kh"}
+	// Without -no-tailnet, hostname + state-dir are mandatory.
+	c := &Config{}
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected error for missing tsnet hostname/state-dir")
 	}
-	// With -direct they are not.
-	c = &Config{Host: "h", User: "u", KnownHosts: "/kh", Direct: true}
+	// With -no-tailnet they are not.
+	c = &Config{NoTailnet: true}
 	if err := c.Validate(); err != nil {
-		t.Fatalf("direct mode should not require tsnet fields: %v", err)
-	}
-}
-
-func TestValidateHostKeyRequirement(t *testing.T) {
-	c := &Config{Host: "h", User: "u", Direct: true}
-	if err := c.Validate(); err == nil {
-		t.Fatal("expected error: known-hosts required unless insecure")
-	}
-	c.InsecureHostKey = true
-	if err := c.Validate(); err != nil {
-		t.Fatalf("insecure host key should satisfy requirement: %v", err)
+		t.Fatalf("no-tailnet mode should not require tsnet fields: %v", err)
 	}
 }
 
@@ -143,14 +135,11 @@ func TestParseHelp(t *testing.T) {
 }
 
 func TestStateDirDefaultFromHome(t *testing.T) {
-	c, err := Parse([]string{"-host", "h"}, env(map[string]string{"HOME": "/home/bob", "USER": "bob"}))
+	c, err := Parse([]string{}, env(map[string]string{"HOME": "/home/bob", "USER": "bob"}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.StateDir != "/home/bob/.config/wisp/tsnet" {
 		t.Fatalf("state dir = %q", c.StateDir)
-	}
-	if c.KnownHosts != "/home/bob/.config/wisp/known_hosts" {
-		t.Fatalf("known hosts = %q", c.KnownHosts)
 	}
 }

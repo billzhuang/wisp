@@ -7,7 +7,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,13 +14,15 @@ import (
 
 // Config is the fully-resolved runtime configuration.
 type Config struct {
-	// Host is the destination "host" or "host:port" on the tailnet. A bare host
-	// defaults to port 22.
-	Host string
-	// User is the remote login name.
-	User string
-	// Command, if non-empty, runs a single command instead of a login shell.
+	// Shell is the program launched in the terminal. Empty resolves to $SHELL,
+	// then /bin/sh (see ResolveShell).
+	Shell string
+	// Command, if non-empty, runs `shell -c <Command>` instead of an interactive
+	// login shell. Handy for one-shot use and for tests.
 	Command string
+
+	// ProxyAddr is the bind address for the embedded tailnet egress proxy.
+	ProxyAddr string
 
 	// Hostname is the tsnet node name shown in the tailnet.
 	Hostname string
@@ -43,17 +44,10 @@ type Config struct {
 	// Ephemeral registers the node as ephemeral.
 	Ephemeral bool
 
-	// Direct bypasses tsnet and dials with the OS network stack. Off by
-	// default; only for hosts already directly reachable.
-	Direct bool
-
-	// KnownHosts is the path to the known_hosts file.
-	KnownHosts string
-	// InsecureHostKey disables host-key verification (testing only).
-	InsecureHostKey bool
-
-	// IdentityFile is an optional private key for public-key auth.
-	IdentityFile string
+	// NoTailnet skips the embedded tsnet node entirely: the proxy then dials via
+	// the OS network stack. For a plain local terminal and for hermetic tests;
+	// tailnet-only resources are unreachable in this mode.
+	NoTailnet bool
 
 	// ShowVersion prints the version and exits.
 	ShowVersion bool
@@ -63,39 +57,32 @@ type Config struct {
 	NoUpdateCheck bool
 }
 
-// Addr returns Host with a default :22 port appended if none was given.
-// net.SplitHostPort is used (rather than a naive colon check) so bare IPv6
-// hosts — legitimate on a tailnet — are not mistaken for host:port.
-func (c *Config) Addr() string {
-	if _, _, err := net.SplitHostPort(c.Host); err == nil {
-		return c.Host
+// ResolveShell returns the shell to launch: the configured value, else $SHELL,
+// else /bin/sh.
+func (c *Config) ResolveShell(getenv func(string) string) string {
+	if c.Shell != "" {
+		return c.Shell
 	}
-	return net.JoinHostPort(c.Host, "22")
+	if sh := getenv("SHELL"); sh != "" {
+		return sh
+	}
+	return "/bin/sh"
 }
 
 // Validate checks required fields and applies cross-field rules.
 func (c *Config) Validate() error {
-	if c.Host == "" {
-		return errors.New("config: -host is required")
-	}
-	if c.User == "" {
-		return errors.New("config: -user is required")
-	}
-	if !c.Direct {
+	if !c.NoTailnet {
 		if c.Hostname == "" {
-			return errors.New("config: -hostname (tsnet node name) is required unless -direct")
+			return errors.New("config: -hostname (tsnet node name) is required unless -no-tailnet")
 		}
 		if c.StateDir == "" {
-			return errors.New("config: -state-dir is required unless -direct (node identity must persist)")
+			return errors.New("config: -state-dir is required unless -no-tailnet (node identity must persist)")
 		}
 		// OAuth-minted nodes must be tagged: the control plane assigns identity
 		// from the tag, so a client secret without tags can't register.
 		if c.ClientSecret != "" && len(c.Tags) == 0 {
 			return errors.New("config: -tags is required with -client-secret (OAuth-authenticated nodes must be tagged)")
 		}
-	}
-	if !c.InsecureHostKey && c.KnownHosts == "" {
-		return errors.New("config: -known-hosts is required unless -insecure-host-key")
 	}
 	return nil
 }
@@ -110,14 +97,10 @@ func Parse(args []string, getenv func(string) string) (*Config, error) {
 	if home := getenv("HOME"); home != "" {
 		defStateDir = filepath.Join(home, ".config", "wisp", "tsnet")
 	}
-	defKnown := ""
-	if home := getenv("HOME"); home != "" {
-		defKnown = filepath.Join(home, ".config", "wisp", "known_hosts")
-	}
 
-	fs.StringVar(&c.Host, "host", "", "destination host on the tailnet (host or host:port)")
-	fs.StringVar(&c.User, "user", getenv("USER"), "remote login user")
-	fs.StringVar(&c.Command, "command", "", "run a single command instead of a login shell")
+	fs.StringVar(&c.Shell, "shell", "", "shell to launch in the terminal (default $SHELL, else /bin/sh)")
+	fs.StringVar(&c.Command, "command", "", "run a single command instead of an interactive shell")
+	fs.StringVar(&c.ProxyAddr, "proxy-addr", "127.0.0.1:0", "bind address for the embedded tailnet egress proxy")
 
 	fs.StringVar(&c.Hostname, "hostname", "wisp", "tsnet node name advertised on the tailnet")
 	fs.StringVar(&c.StateDir, "state-dir", defStateDir, "directory persisting the embedded tsnet node identity")
@@ -131,11 +114,7 @@ func Parse(args []string, getenv func(string) string) (*Config, error) {
 	fs.StringVar(&c.ControlURL, "control-url", getenv("TS_CONTROL_URL"), "coordination server URL (Headscale/self-hosted)")
 	fs.BoolVar(&c.Ephemeral, "ephemeral", false, "register the node as ephemeral")
 
-	fs.BoolVar(&c.Direct, "direct", false, "bypass tsnet and dial via the OS network stack (no Tailscale)")
-
-	fs.StringVar(&c.KnownHosts, "known-hosts", defKnown, "path to known_hosts for host-key verification")
-	fs.BoolVar(&c.InsecureHostKey, "insecure-host-key", false, "skip host-key verification (testing only)")
-	fs.StringVar(&c.IdentityFile, "i", "", "private key file for public-key auth")
+	fs.BoolVar(&c.NoTailnet, "no-tailnet", false, "skip the embedded Tailscale node; proxy via the OS network stack (local-only/testing)")
 
 	fs.BoolVar(&c.ShowVersion, "version", false, "print version and exit")
 	fs.BoolVar(&c.DoUpdate, "update", false, "check for and install a newer release, then exit")

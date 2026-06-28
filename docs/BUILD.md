@@ -8,7 +8,7 @@ go test ./...
 ```
 
 That build uses the embedded tsnet node, the pure-Go VT engine, and the stdio
-frontend — the whole network → SSH → PTY → engine pipeline, no cgo, no GPU.
+frontend — the whole tailnet → proxy → local PTY → engine pipeline, no cgo, no GPU.
 
 Two optional build tags swap in the heavier components. They are kept behind
 tags precisely so the default build always works and CI can run the full test

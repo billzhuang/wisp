@@ -12,16 +12,17 @@
 #   4. go build ./...        — the default (pure-Go) build compiles
 #   5. go test -tags e2e ./internal/e2e/   — BLACK-BOX tests of the real binary:
 #                                            it compiles wisp, attaches a PTY,
-#                                            connects to an in-process SSH server,
+#                                            launches a local shell (-no-tailnet),
 #                                            types input, and asserts on the
 #                                            rendered terminal output.
 #
 # Step 5 is the part that proves "wisp works as a terminal" rather than just
 # "wisp's packages have correct unit behavior". If tailnet credentials are
 # present in the environment (WISP_E2E_TS_CLIENT_SECRET / WISP_E2E_TS_TAGS /
-# WISP_E2E_HOST / WISP_E2E_USER, plus WISP_E2E_SSH_KEY or WISP_E2E_PASSWORD),
-# step 5 additionally runs a live test through the real tsnet path (authenticated
-# by an OAuth client secret, not a long-lived key); otherwise that test skips.
+# WISP_E2E_URL / WISP_E2E_EXPECT), step 5 additionally runs a live test through
+# the real tsnet path — curl-ing a tailnet resource through the embedded proxy,
+# authenticated by an OAuth client secret, not a long-lived key; otherwise that
+# test skips.
 #
 # Usage:
 #   scripts/autotest.sh              run the gauntlet once; exit non-zero on first failure

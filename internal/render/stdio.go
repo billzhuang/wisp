@@ -14,16 +14,15 @@ import (
 
 // NewDefault returns the frontend used when the binary is built without the
 // `ebiten` tag: a raw stdio passthrough. The local OS terminal does the actual
-// glyph rendering, while wisp still feeds remote output through the
+// glyph rendering, while wisp still feeds the shell's output through the
 // terminal.Engine (so the engine — and any scrollback/inspection built on it —
-// stays in the loop). This is the Phase 1 deliverable: a fully working tailnet
-// terminal with no GUI dependency.
+// stays in the loop). This is a fully working terminal with no GUI dependency.
 func NewDefault() Frontend { return &stdioFrontend{} }
 
 type stdioFrontend struct{}
 
-// Run puts the local terminal into raw mode, mirrors remote output to both the
-// engine and os.Stdout, and pumps local stdin to the remote. It tracks
+// Run puts the local terminal into raw mode, mirrors the shell's output to both
+// the engine and os.Stdout, and pumps local stdin to the shell. It tracks
 // SIGWINCH-style resizes via the local terminal size at startup; live resize
 // handling is wired by the caller through ctrl.Resize when a signal arrives.
 func (s *stdioFrontend) Run(ctx context.Context, ctrl Controller, eng terminal.Engine) error {
@@ -47,7 +46,7 @@ func (s *stdioFrontend) Run(ctx context.Context, ctrl Controller, eng terminal.E
 		defer restore()
 	}
 
-	// Local stdin -> remote.
+	// Local stdin -> shell.
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -63,7 +62,7 @@ func (s *stdioFrontend) Run(ctx context.Context, ctrl Controller, eng terminal.E
 		}
 	}()
 
-	// Remote -> engine + local stdout.
+	// Shell -> engine + local stdout.
 	out := io.MultiWriter(eng, os.Stdout)
 	done := make(chan error, 1)
 	go func() {

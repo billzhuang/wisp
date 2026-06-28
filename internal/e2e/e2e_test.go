@@ -6,11 +6,10 @@
 //
 // The per-layer unit tests and the in-process integration test
 // (internal/app/integration_test.go) already prove the seams compose. What they
-// can't prove is that the shipped binary, with its real flag parsing, auth
-// prompt, raw-mode terminal handling, and stdio frontend, actually connects to
-// a host, runs a shell, forwards keystrokes, and paints the bytes a user would
-// see. That is the question only a black-box test of the binary can answer, and
-// it is the one that matters for "does wisp work as a terminal".
+// can't prove is that the shipped binary, with its real flag parsing, proxy
+// startup, raw-mode terminal handling, and stdio frontend, actually launches a
+// local shell, forwards keystrokes, and paints the bytes a user would see. That
+// is the question only a black-box test of the binary can answer.
 //
 // These tests are gated behind the `e2e` build tag so the default
 // `go test ./...` (which has no PTY and no built binary) stays fast and
@@ -21,17 +20,15 @@
 // or via scripts/autotest.sh, which is what the Claude Code auto-test loop
 // invokes.
 //
-// The remote end is the in-process test SSH server (internal/testutil/sshserver)
-// listening on localhost; wisp reaches it with `-direct` (no tailnet) and
-// `-insecure-host-key` (no known_hosts). No network, display, or Tailscale
-// daemon is involved, so the suite runs unchanged in CI.
+// The hermetic tests run wisp with `-no-tailnet` so no embedded Tailscale node
+// (and thus no network or credentials) is required: the egress proxy dials via
+// the OS stack and a real local shell drives the terminal. The opt-in live test
+// (tailnet_test.go) exercises the real tsnet path.
 package e2e
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -39,7 +36,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/billzhuang/wisp/internal/testutil/sshserver"
+	"bytes"
+
 	"github.com/creack/pty"
 )
 
@@ -69,9 +67,6 @@ func buildWisp() (path string, cleanup func(), err error) {
 		return "", nil, err
 	}
 	bin := dir + "/wisp"
-	// ./cmd/wisp resolved from the module root. `go test` runs with the working
-	// directory set to this package's dir (internal/e2e), so reach up to the
-	// module root.
 	cmd := exec.Command("go", "build", "-o", bin, "github.com/billzhuang/wisp/cmd/wisp")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		os.RemoveAll(dir)
@@ -91,45 +86,35 @@ type session struct {
 	buf bytes.Buffer // everything wisp has written to its terminal so far
 }
 
-// launch starts the in-process SSH server with the given handler, then launches
-// wisp against it over a PTY. The returned session is torn down by t.Cleanup.
-func launch(t *testing.T, handler sshserver.Handler, args ...string) (*session, *sshserver.Server) {
+// launch runs wisp in hermetic mode (-no-tailnet, no update check) with the
+// given extra args, on a fresh PTY. The returned session is torn down by
+// t.Cleanup.
+func launch(t *testing.T, args ...string) *session {
 	t.Helper()
-
-	srv, err := sshserver.Start(handler)
-	if err != nil {
-		t.Fatalf("start ssh server: %v", err)
-	}
-	t.Cleanup(func() { srv.Close() })
-
 	base := []string{
-		"-direct",            // plain TCP, no tsnet/tailnet
-		"-insecure-host-key", // no known_hosts file needed
-		"-no-update-check",   // never touch the network
-		"-host", srv.Addr(),
-		"-user", "tester",
+		"-no-tailnet",      // proxy via the OS stack; no tsnet/credentials needed
+		"-no-update-check", // never touch the network
 	}
-	return startWisp(t, nil, append(base, args...)...), srv
+	return startWisp(t, nil, append(base, args...)...)
 }
 
 // startWisp launches the compiled binary with the given args (and any extra
 // environment) on a fresh PTY and returns a session that drains and exposes its
-// terminal output. It is the low-level spawn shared by the hermetic localhost
-// tests (via launch) and the opt-in live tailnet test (which needs a different
-// flag set — real tsnet, no -direct — and passes its OAuth secret through the
-// environment rather than argv so it never lands in a process listing).
+// terminal output. It is the low-level spawn shared by the hermetic tests (via
+// launch) and the opt-in live tailnet test (which needs real tsnet flags and
+// passes its OAuth secret through the environment rather than argv so it never
+// lands in a process listing).
 func startWisp(t *testing.T, extraEnv []string, args ...string) *session {
 	t.Helper()
 
 	cmd := exec.Command(wispBin, args...)
-	// TERM makes the remote pty-req well-formed; keep the inherited env so the
-	// process resolves runtime deps, plus any caller-supplied secrets.
+	// TERM makes the child shell's terminal handling well-formed; keep the
+	// inherited env so the process resolves runtime deps, plus any caller secrets.
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	cmd.Env = append(cmd.Env, extraEnv...)
 
 	// StartWithSize sets the window size atomically before the child starts, so
-	// wisp's stdio frontend reads the intended 80x24 at startup rather than
-	// racing a Setsize that lands after it has already queried the terminal.
+	// wisp's stdio frontend reads the intended 80x24 at startup.
 	master, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
 		t.Fatalf("pty.StartWithSize wisp: %v", err)
@@ -215,79 +200,51 @@ func sanitize(s string) string {
 	return b.String()
 }
 
-// TestBinaryConnectsAndRenders is the headline check: the real binary dials the
-// host, the SSH+PTY+engine+frontend pipeline carries remote output, and the
-// bytes a user would see actually reach the terminal.
-func TestBinaryConnectsAndRenders(t *testing.T) {
-	const banner = "WISP-E2E-CONNECTED"
-	s, _ := launch(t, func(stdin io.Reader, stdout io.Writer, cmd string, pty sshserver.PTYRequest) {
-		fmt.Fprint(stdout, "\x1b[2J\x1b[H") // clear + home, like a real shell prompt
-		fmt.Fprintf(stdout, "%s term=%s %dx%d\r\n", banner, pty.Term, pty.Cols, pty.Rows)
-		// Keep the session open briefly so the client is unambiguously connected.
-		buf := make([]byte, 1)
-		stdin.Read(buf)
-	})
-
-	// Empty password (the test server accepts any); the interactive prompt reads
-	// one line from the PTY.
-	s.write("\n")
+// TestBinaryLaunchesShellAndRenders is the headline check: the real binary
+// starts the egress proxy, launches a local shell, and the shell's output
+// travels through the engine + frontend to the terminal a user would see. The
+// command also prints $WISP and $ALL_PROXY, proving the proxy env was injected.
+func TestBinaryLaunchesShellAndRenders(t *testing.T) {
+	const banner = "WISP-E2E-LAUNCHED"
+	s := launch(t, "-command", `printf '%s wisp=%s proxy=%s\n' "`+banner+`" "$WISP" "$ALL_PROXY"`)
 
 	out := s.waitFor(banner, 10*time.Second)
-	if !strings.Contains(out, "term=xterm-256color") {
-		t.Fatalf("expected TERM forwarded to remote pty-req; got:\n%s", sanitize(out))
+	if !strings.Contains(out, "wisp=1") {
+		t.Fatalf("expected WISP=1 injected into shell env; got:\n%s", sanitize(out))
 	}
-	// The remote saw an 80x24 window (the size we set on the PTY).
-	if !strings.Contains(out, "80x24") {
-		t.Fatalf("expected forwarded window size 80x24; got:\n%s", sanitize(out))
+	if !strings.Contains(out, "proxy=socks5h://") {
+		t.Fatalf("expected ALL_PROXY=socks5h://… injected into shell env; got:\n%s", sanitize(out))
 	}
 }
 
 // TestBinaryForwardsKeystrokes proves the full input path through the real
-// binary: bytes typed at wisp's terminal travel client -> SSH stdin -> remote,
-// and the remote's echo travels back -> engine -> frontend -> terminal.
+// binary: bytes typed at wisp's terminal travel client -> shell stdin -> shell,
+// and the echo travels back -> engine -> frontend -> terminal. `cat` echoes
+// whatever is typed.
 func TestBinaryForwardsKeystrokes(t *testing.T) {
-	s, _ := launch(t, func(stdin io.Reader, stdout io.Writer, cmd string, pty sshserver.PTYRequest) {
-		fmt.Fprint(stdout, "ready\r\n")
-		r := make([]byte, 256)
-		for {
-			n, err := stdin.Read(r)
-			if n > 0 {
-				// Echo back what was typed, framed so the test can find it.
-				fmt.Fprintf(stdout, "ECHO[%s]\r\n", strings.TrimRight(string(r[:n]), "\r\n"))
-			}
-			if err != nil {
-				return
-			}
-		}
-	})
-
-	s.write("\n") // password
-	s.waitFor("ready", 10*time.Second)
+	s := launch(t, "-command", "cat")
 
 	s.write("hello-wisp\n")
-	out := s.waitFor("ECHO[hello-wisp]", 10*time.Second)
-	if !strings.Contains(out, "ECHO[hello-wisp]") {
+	out := s.waitFor("hello-wisp", 10*time.Second)
+	if !strings.Contains(out, "hello-wisp") {
 		t.Fatalf("keystrokes not round-tripped; got:\n%s", sanitize(out))
 	}
 }
 
-// TestBinaryRunsRemoteCommand exercises the `-command` flag end-to-end: wisp
-// requests an exec channel instead of a shell, and the command's output renders.
-func TestBinaryRunsRemoteCommand(t *testing.T) {
-	const marker = "REMOTE-CMD-RAN"
-	s, _ := launch(t, func(stdin io.Reader, stdout io.Writer, cmd string, pty sshserver.PTYRequest) {
-		fmt.Fprintf(stdout, "%s: %s\r\n", marker, cmd)
-	}, "-command", "echo hi")
-
-	s.write("\n") // password
+// TestBinaryRunsCommand exercises the `-command` flag end-to-end: wisp runs a
+// single command in the shell instead of an interactive session, and its output
+// renders.
+func TestBinaryRunsCommand(t *testing.T) {
+	const marker = "WISP-CMD-RAN"
+	s := launch(t, "-command", "echo "+marker)
 	out := s.waitFor(marker, 10*time.Second)
-	if !strings.Contains(out, "echo hi") {
-		t.Fatalf("expected remote to receive command %q; got:\n%s", "echo hi", sanitize(out))
+	if !strings.Contains(out, marker) {
+		t.Fatalf("expected command output %q; got:\n%s", marker, sanitize(out))
 	}
 }
 
 // TestVersionFlag is the cheapest possible smoke check that the binary runs at
-// all: `wisp -version` must print and exit 0 without connecting.
+// all: `wisp -version` must print and exit 0 without launching a terminal.
 func TestVersionFlag(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

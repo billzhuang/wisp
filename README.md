@@ -1,27 +1,38 @@
 # wisp
 
 A Tailscale-native terminal emulator. wisp embeds a **userspace Tailscale node
-(tsnet)** directly in the binary, so it can SSH to hosts on a tailnet **with no
-Tailscale app, daemon, or system client installed on the client machine**. The
-terminal *is* the tailnet node.
+(tsnet)** directly in the binary and runs a **local shell** whose network egress
+is routed through the tailnet — **with no Tailscale app, daemon, or system
+client installed, and without touching the host's DNS or routing**. The terminal
+*is* the tailnet node, so tools you run in it (curl, git, Claude Code, Codex, …)
+can reach tailnet and subnet-router resources directly.
 
 The render path is built around the [Ghostty](https://ghostty.org) terminal
 engine (libghostty) + [Ebitengine](https://ebitengine.org), with a pure-Go VT
 engine and a stdio frontend as the always-buildable default.
 
-> Status: the network half (tsnet + SSH + PTY) and the pure-Go terminal engine
-> are complete and tested end-to-end. The libghostty cgo engine and the
-> Ebitengine GPU frontend are real, reviewable code behind build tags; see
-> [docs/BUILD.md](docs/BUILD.md) for their toolchain requirements.
+> Status: the network half (tsnet + egress proxy + local PTY) and the pure-Go
+> terminal engine are complete and tested end-to-end. The libghostty cgo engine
+> and the Ebitengine GPU frontend are real, reviewable code behind build tags;
+> see [docs/BUILD.md](docs/BUILD.md) for their toolchain requirements.
 
 ## Why
 
-Existing libghostty terminals that touch Tailscale (Shio, Chuchu) rely on the
-**system** Tailscale client. wisp removes that dependency: connectivity comes
-from `tailscale.com/tsnet` linked into the binary, with its own state directory
-and auth key. The destination host must still be on the tailnet (or behind a
-subnet router) — tsnet removes the *client-side* app, not the requirement that
-the other end is reachable.
+Installing the **system** Tailscale client adds a kernel TUN device and rewrites
+the host's DNS and routing — which can conflict with a corporate VPN or local
+DNS setup. wisp avoids all of that: connectivity comes from `tailscale.com/tsnet`
+linked into the binary, a *userspace* network stack with its own state directory
+and auth key. No TUN device, no DNS changes, no daemon.
+
+The catch with a userspace stack is that it can't *transparently* capture other
+programs' traffic the way a TUN device does. wisp bridges that gap with a small
+**local proxy**: tsnet provides the connectivity, the proxy exposes it on
+loopback, and wisp injects `HTTP(S)_PROXY` / `ALL_PROXY` into the shell's
+environment. Virtually every modern tool honors those variables, and the
+hostname travels with each request, so MagicDNS names resolve through the tailnet
+without any system DNS change. The destination must still be on the tailnet (or
+behind a subnet router) — tsnet removes the *client-side* app, not the
+requirement that the other end is reachable.
 
 ## Architecture
 
@@ -30,28 +41,31 @@ One Go process owns everything. The seam:
 ```text
 [frontend: stdio (default) | Ebitengine (-tags ebiten)]
    ↑ draws grid             ↓ key/mouse events
-[terminal.Engine] ← VT bytes ← stdout ─┐
-   pure-go VT (default)                 │
-   libghostty (-tags libghostty)        │
-                              [sshx: x/crypto/ssh PTY + Shell]
-                                         │ over net.Conn
-                              [transport.Dialer]
-                                tsnet.Server.Dial (default)
-                                net.Dialer (-direct / tests)
-                                         │ userspace WireGuard (gVisor netstack)
-                                         ▼
-                                     tailnet → host:22
+[terminal.Engine] ← VT bytes ← PTY ─┐
+   pure-go VT (default)              │
+   libghostty (-tags libghostty)     │
+                          [localpty: $SHELL in a local PTY]
+                                     │  ALL_PROXY / HTTP(S)_PROXY in its env
+                          [proxy: SOCKS5 + HTTP on 127.0.0.1]
+                                     │ every CONNECT dialed through ↓
+                          [transport.Dialer]
+                            tsnet.Server.Dial (default)
+                            net.Dialer (-no-tailnet / tests)
+                                     │ userspace WireGuard (gVisor netstack)
+                                     ▼
+                                 tailnet → host:port
 ```
 
 Every layer is an interface so it can be swapped and tested in isolation:
 
 | Layer | Package | Interface | Default impl | Alternate |
 |---|---|---|---|---|
-| Tailnet transport | `internal/transport` | `Dialer` | `TSNetDialer` (tsnet) | `NetDialer` (`-direct`, tests) |
-| SSH session | `internal/sshx` | — | `x/crypto/ssh` over the dialer conn | |
+| Tailnet transport | `internal/transport` | `Dialer` | `TSNetDialer` (tsnet) | `NetDialer` (`-no-tailnet`, tests) |
+| Egress proxy | `internal/proxy` | — | SOCKS5 + HTTP over the dialer conn | |
+| Local shell | `internal/localpty` | — | `$SHELL` in a PTY (`creack/pty`) | |
 | Terminal engine | `internal/terminal` | `Engine` | pure-Go VT parser | libghostty (`-tags libghostty`) |
 | Frontend | `internal/render` | `Frontend` | stdio passthrough | Ebitengine (`-tags ebiten`), `Headless` (tests) |
-| Controller | `internal/app` | — | wires SSH ↔ frontend | |
+| Controller | `internal/app` | — | wires shell ↔ frontend | |
 | Config | `internal/config` | — | flags + env | |
 
 ## Install
@@ -81,25 +95,32 @@ or `go install github.com/billzhuang/wisp/cmd/wisp@latest` for the CLI.
 
 ```sh
 # Interactive login URL on first run; node identity persists in -state-dir.
-wisp -host dev-box -user alice
+# Opens your $SHELL with tailnet egress wired in.
+wisp
+
+# Inside the terminal, reach a tailnet/subnet-router resource as usual:
+curl http://dev-box.internal/        # routed through the embedded tsnet node
+git clone https://gitea.tailnet/...  # MagicDNS resolved over the tailnet
 
 # Pre-authenticated / ephemeral node against a self-hosted control plane:
-TS_AUTHKEY=tskey-... wisp -host dev-box -user alice \
-  -control-url https://headscale.example.com -ephemeral
+TS_AUTHKEY=tskey-... wisp -control-url https://headscale.example.com -ephemeral
 
 # Headless/CI login the modern way — an OAuth client secret (scoped, revocable)
 # instead of a long-lived auth key. wisp mints a short-lived key at startup; an
 # OAuth-authenticated node must be tagged, so -tags is required:
-TS_CLIENT_SECRET=tskey-client-... wisp -host dev-box -user alice \
-  -tags tag:ci -ephemeral
+TS_CLIENT_SECRET=tskey-client-... wisp -tags tag:ci -ephemeral
 
-# Bypass tsnet entirely for a directly reachable host (no Tailscale):
-wisp -direct -host 10.0.0.5 -user alice
+# Run a one-shot command instead of an interactive shell:
+wisp -command 'curl -s http://dev-box.internal/health'
+
+# Plain local terminal with no embedded Tailscale (proxy via the OS stack):
+wisp -no-tailnet
 ```
 
-Run `wisp -h` for the full flag list. Host keys are verified against
-`~/.config/wisp/known_hosts` (trust-on-first-use; a *changed* key is always
-rejected as a possible MITM).
+Run `wisp -h` for the full flag list. The shell wisp launches is `$SHELL` (or
+`-shell`); its environment carries `ALL_PROXY` / `HTTP_PROXY` / `HTTPS_PROXY`
+pointing at the embedded proxy, plus `WISP=1` so prompts/scripts can tell they
+are running inside wisp.
 
 ## Auto-update
 
@@ -196,21 +217,21 @@ Code, but reads as a contributor quickstart for anyone.
 
 - **Unit:** VT parser (text, control codes, CSI, erase, SGR/256/truecolour,
   UTF-8 across Write boundaries, scrolling, resize, concurrency), colour
-  palette, config parsing/validation, transport, host-key TOFU, the headless
-  frontend.
-- **Integration:** `internal/app/integration_test.go` and
-  `internal/sshx/sshx_test.go` stand up a real in-process SSH server
-  (`internal/testutil/sshserver`), dial it through the `Dialer` seam, allocate a
-  PTY, run a shell/command, pipe the output through the terminal engine, and
-  assert the rendered grid — exercising the whole network → SSH → PTY → engine
-  pipeline without a tailnet or a display.
+  palette, config parsing/validation, transport, the egress proxy (HTTP CONNECT
+  + SOCKS5), the local PTY session, the headless frontend.
+- **Integration:** `internal/app/integration_test.go` spawns a real local shell
+  on a PTY, pipes its output through the terminal engine, and asserts the
+  rendered grid — exercising the whole shell → PTY → engine pipeline without a
+  tailnet or a display.
 - **End-to-end (black-box):** `internal/e2e/` drives the *actual compiled
   binary* the way a person does — launched as its own process with a real PTY,
-  connected to the test SSH server, typed into, and asserted against the bytes
-  it paints back. This is the test that proves the shipped terminal works, not
-  just that its packages pass unit tests. It is gated behind `-tags e2e`; an
-  opt-in `TestLiveTailnet` additionally drives the real **tsnet** path when
-  tailnet credentials are present. See [docs/TESTING.md](docs/TESTING.md).
+  running a local shell (`-no-tailnet`), typed into, and asserted against the
+  bytes it paints back (including that the proxy env was injected). This is the
+  test that proves the shipped terminal works, not just that its packages pass
+  unit tests. It is gated behind `-tags e2e`; an opt-in `TestLiveTailnet`
+  additionally drives the real **tsnet** path — `curl`-ing a tailnet resource
+  through the embedded proxy — when tailnet credentials are present. See
+  [docs/TESTING.md](docs/TESTING.md).
 
 One command runs the whole gauntlet (fmt, vet, race tests, build, e2e) and is
 what the Claude Code auto-test loop calls each iteration:
@@ -223,17 +244,17 @@ scripts/autotest.sh --loop     # repeat until a step fails (surfaces flakiness)
 ## Layout
 
 ```text
-cmd/wisp/                main: flag parsing, auth, dialer selection, wiring
+cmd/wisp/                main: flag parsing, dialer selection, proxy + shell wiring
 internal/transport/      Dialer: tsnet node (no daemon) + plain net
-internal/sshx/           SSH client over the dialer conn; known_hosts TOFU
+internal/proxy/          SOCKS5 + HTTP egress proxy dialed through the tailnet
+internal/localpty/       local $SHELL in a PTY (creack/pty)
 internal/terminal/       Engine + pure-Go VT parser; libghostty scaffold
 internal/terminal/palette ANSI/256/truecolour mapping
 internal/render/         Frontend: stdio + Ebitengine + headless
-internal/app/            Controller wiring SSH ↔ frontend
+internal/app/            Controller wiring the shell ↔ frontend
 internal/config/         flags + env → validated Config
 internal/update/         GitHub Releases self-update (check, verify, replace)
 internal/version/        build version (ldflags-injected by CD)
-internal/testutil/sshserver in-process SSH server for tests
 internal/e2e/            black-box tests of the real binary over a PTY (-tags e2e)
 scripts/autotest.sh      one-command test gauntlet for the auto-test loop
 .github/workflows/       ci (build/test/vet/e2e) + release (tag → binaries + checksums)

@@ -11,9 +11,10 @@ import (
 	"github.com/billzhuang/wisp/internal/terminal"
 )
 
-// Tabs presents several concurrent SSH sessions to a frontend as tabs. It is the
-// production render.TabController: every tab owns its own terminal engine and a
-// goroutine pumping that session's output into it (so background tabs stay live),
+// Tabs presents several concurrent shell sessions to a frontend as tabs. It is
+// the production render.TabController: every tab owns its own terminal engine
+// and a goroutine pumping that session's output into it (so background tabs stay
+// live),
 // Input goes to the active tab, Resize fans out to all tabs (so a background tab
 // matches the window the moment it is selected), and New/Close/Next/Prev manage
 // the set. There is always at least one tab.
@@ -31,10 +32,10 @@ type Tabs struct {
 	closed bool
 }
 
-// Opener dials a brand-new session and pairs it with a fresh engine, returning a
+// Opener opens a brand-new session and pairs it with a fresh engine, returning a
 // closer that tears the session down. Tabs calls it for every tab after the
-// first. Keeping it a function (rather than wiring in the dialer/config) keeps
-// Tabs free of any SSH/transport dependency and trivially testable with fakes.
+// first. Keeping it a function (rather than wiring in the shell/config) keeps
+// Tabs free of any localpty/transport dependency and trivially testable with fakes.
 type Opener func() (ctrl render.Controller, eng terminal.Engine, closer func() error, err error)
 
 // tab is a single session: a controller to drive, an engine to render, the pump
@@ -43,7 +44,7 @@ type tab struct {
 	ctrl   render.Controller
 	eng    terminal.Engine
 	closer func() error
-	loaded atomic.Bool // set once the first byte of remote output arrives
+	loaded atomic.Bool // set once the first byte of shell output arrives
 }
 
 var errClosed = errors.New("app: tab manager closed")
@@ -97,7 +98,7 @@ func (t *Tabs) Input(p []byte) error {
 }
 
 // Resize records the new window size and applies it to every tab's engine and
-// remote PTY, so switching to a background tab never shows a stale size.
+// shell PTY, so switching to a background tab never shows a stale size.
 func (t *Tabs) Resize(cols, rows int) error {
 	t.mu.Lock()
 	t.cols, t.rows = cols, rows
