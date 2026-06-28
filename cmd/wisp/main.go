@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"time"
@@ -215,7 +216,7 @@ func proxyEnv(base []string, addr string) []string {
 func setEnv(env []string, key, val string) []string {
 	prefix := key + "="
 	for i, kv := range env {
-		if len(kv) >= len(prefix) && kv[:len(prefix)] == prefix {
+		if strings.HasPrefix(kv, prefix) {
 			env[i] = prefix + val
 			return env
 		}

@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -123,6 +124,9 @@ func (s *Session) Stdout() io.Reader { return ptyReader{s.ptmx} }
 type ptyReader struct{ f *os.File }
 
 func (r ptyReader) Read(p []byte) (int, error) {
+	if r.f == nil {
+		return 0, io.EOF // Stdout read before Start: empty stream, not a panic
+	}
 	n, err := r.f.Read(p)
 	if err != nil && errors.Is(err, syscall.EIO) {
 		err = io.EOF
@@ -173,7 +177,7 @@ func (s *Session) wait() error {
 // ensureTerm appends TERM=term unless the environment already defines TERM.
 func ensureTerm(env []string, term string) []string {
 	for _, kv := range env {
-		if len(kv) >= 5 && kv[:5] == "TERM=" {
+		if strings.HasPrefix(kv, "TERM=") {
 			return env
 		}
 	}

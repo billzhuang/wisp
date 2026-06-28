@@ -95,6 +95,10 @@ func TestInputForwarding(t *testing.T) {
 	select {
 	case <-done:
 		// success
+	case err := <-frontendErr:
+		// The frontend returned before the echo landed — surface its error
+		// (or a clear failure) instead of waiting for the context to expire.
+		t.Fatalf("frontend exited before echo (err=%v); line = %q, want hello", err, eng.Snapshot().Line(0))
 	case <-ctx.Done():
 		t.Fatalf("round-trip line = %q, want hello", eng.Snapshot().Line(0))
 	}

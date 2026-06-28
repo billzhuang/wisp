@@ -135,6 +135,12 @@ func (s *Server) handleHTTP(c net.Conn, br *bufio.Reader) {
 	req.URL.Host = ""
 	req.Header.Del("Proxy-Connection")
 	req.Header.Del("Proxy-Authorization")
+	// Forward a single request/response and ask the origin to close afterwards:
+	// req.Write emits "Connection: close", so the origin ends the stream once the
+	// response is sent and the io.Copy below terminates instead of blocking
+	// forever on a keep-alive connection. (HTTPS and any reused connection go
+	// through CONNECT above, which has no such limit.)
+	req.Close = true
 	if err := req.Write(remote); err != nil {
 		return
 	}
