@@ -42,6 +42,54 @@ type UpdatePrompter interface {
 	SetUpdate(notice string, install func() error)
 }
 
+// TabInfo is one entry in a frontend's tab strip.
+type TabInfo struct {
+	Title  string // short label, e.g. "#1"
+	Active bool   // whether this is the selected tab
+}
+
+// TabController is the optional multi-session capability a frontend can drive.
+// A frontend obtains it by type-asserting the render.Controller it is given: the
+// controller owns N concurrent sessions ("tabs"), pumps each session's output
+// into its own terminal.Engine (so background tabs stay live), and routes
+// Input/Resize to the active one. *app.Tabs is the production implementation;
+// the stdio/headless frontends never see it. The embedded Controller's Stdout is
+// unused in tab mode — the per-tab pumps own the real output streams — so the
+// frontend renders via ActiveEngine instead.
+type TabController interface {
+	Controller
+
+	// ActiveEngine is the engine of the currently selected tab: the grid the
+	// frontend draws each frame.
+	ActiveEngine() terminal.Engine
+
+	// ActiveLoading reports whether the active tab is still waiting for its
+	// first byte of remote output, so the frontend can show a connecting splash.
+	ActiveLoading() bool
+
+	// TabList lists every open tab in display order, for the tab strip.
+	TabList() []TabInfo
+
+	// NewTab opens an additional session and switches to it. It may block while
+	// the new session is dialed, so callers should invoke it off the UI loop.
+	NewTab() error
+
+	// CloseActiveTab closes the active session and selects an adjacent one. It
+	// is a no-op when only one tab remains (there is always at least one).
+	CloseActiveTab()
+
+	// NextTab and PrevTab move the selection, wrapping at the ends.
+	NextTab()
+	PrevTab()
+}
+
+// TabCapable marks a Frontend that can present a TabController as tabs. main
+// builds a multi-session controller only for such frontends; the rest receive a
+// single-session controller and never exercise the tab methods.
+type TabCapable interface {
+	SupportsTabs() bool
+}
+
 // Headless is a renderer-free Frontend: it pumps remote output into the engine
 // and blocks until the stream ends or ctx is cancelled. It draws nothing, which
 // makes it ideal for tests and for validating the network→engine seam (Phase 1

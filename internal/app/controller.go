@@ -12,6 +12,7 @@ package app
 import (
 	"context"
 	"io"
+	"sync"
 
 	"github.com/billzhuang/wisp/internal/sshx"
 	"github.com/billzhuang/wisp/internal/transport"
@@ -20,6 +21,9 @@ import (
 // Controller manages one SSH session for a frontend.
 type Controller struct {
 	sess *sshx.Session
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // Dial opens an SSH session through the dialer and returns a controller for it.
@@ -61,5 +65,10 @@ func (c *Controller) Resize(cols, rows int) error { return c.sess.Resize(cols, r
 // Wait blocks until the remote process exits.
 func (c *Controller) Wait() error { return c.sess.Wait() }
 
-// Close tears the session down.
-func (c *Controller) Close() error { return c.sess.Close() }
+// Close tears the session down. It is idempotent: a tabbed frontend's session
+// manager and main's defer may both close the same controller, so the second
+// call is a no-op that returns the first call's result.
+func (c *Controller) Close() error {
+	c.closeOnce.Do(func() { c.closeErr = c.sess.Close() })
+	return c.closeErr
+}
