@@ -100,12 +100,14 @@ func run(args []string) error {
 		return err
 	}
 
-	ctrl, err := app.Dial(ctx, dialer, sshx.Config{
+	sshCfg := sshx.Config{
 		Addr:    cfg.Addr(),
 		User:    cfg.User,
 		Auth:    auth,
 		HostKey: hostKey,
-	})
+	}
+
+	ctrl, err := app.Dial(ctx, dialer, sshCfg)
 	if err != nil {
 		return err
 	}
@@ -122,6 +124,31 @@ func run(args []string) error {
 	eng := terminal.DefaultEngine(80, 24)
 	frontend := render.NewDefault()
 
+	// A tab-capable frontend (the GUI) drives several concurrent sessions as
+	// tabs. Wrap the initial session plus an opener that re-dials the same host
+	// into a tab manager; every other frontend keeps the single session. New
+	// tabs reuse the launch credentials — a key signer is reused silently, while
+	// password auth would re-prompt on the controlling terminal — and run an
+	// interactive shell.
+	var rctrl render.Controller = ctrl
+	if tc, ok := frontend.(render.TabCapable); ok && tc.SupportsTabs() {
+		open := func() (render.Controller, terminal.Engine, func() error, error) {
+			c, err := app.Dial(ctx, dialer, sshCfg)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if err := c.Start(); err != nil {
+				c.Close()
+				return nil, nil, nil, err
+			}
+			cols, rows := eng.Size()
+			return c, terminal.DefaultEngine(cols, rows), c.Close, nil
+		}
+		tabs := app.NewTabs(ctrl, eng, ctrl.Close, open)
+		defer tabs.Close()
+		rctrl = tabs
+	}
+
 	// If a newer release is pending and the frontend can show an in-app prompt
 	// (the GUI), wire the click-to-install action — this is the Ghostty-style
 	// "update available, click to install" affordance.
@@ -134,7 +161,7 @@ func run(args []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "wisp: connected to %s (engine: %s)\n", cfg.Addr(), terminal.Backend)
-	return frontend.Run(ctx, ctrl, eng)
+	return frontend.Run(ctx, rctrl, eng)
 }
 
 func buildDialer(ctx context.Context, cfg *config.Config) (transport.Dialer, error) {
