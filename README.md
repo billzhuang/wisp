@@ -187,6 +187,11 @@ The default build needs only the Go toolchain. The `-tags ebiten` and
 `-tags libghostty` builds need extra toolchains — see
 [docs/BUILD.md](docs/BUILD.md).
 
+New to the codebase? [CLAUDE.md](CLAUDE.md) is a one-page orientation — the
+common commands plus the interface-seam architecture (`Dialer` → SSH → `Engine`
+→ `Frontend`) that the rest of this README expands on. It is written for Claude
+Code, but reads as a contributor quickstart for anyone.
+
 ## Tests
 
 - **Unit:** VT parser (text, control codes, CSI, erase, SGR/256/truecolour,
@@ -234,4 +239,5 @@ scripts/autotest.sh      one-command test gauntlet for the auto-test loop
 .github/workflows/       ci (build/test/vet/e2e) + release (tag → binaries + checksums)
 docs/BUILD.md            libghostty (Zig) + Ebitengine toolchain notes
 docs/TESTING.md          test scopes, the e2e harness, and the auto-test loop
+CLAUDE.md                orientation for Claude Code: commands + seam architecture
 ```
