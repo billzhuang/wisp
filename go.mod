@@ -3,6 +3,7 @@ module github.com/billzhuang/wisp
 go 1.26.4
 
 require (
+	github.com/creack/pty v1.1.24
 	github.com/hajimehoshi/ebiten/v2 v2.9.9
 	golang.org/x/crypto v0.53.0
 	golang.org/x/image v0.43.0

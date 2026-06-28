@@ -27,6 +27,16 @@ type TSConfig struct {
 	// run, which we surface via AuthLog.
 	AuthKey string
 
+	// ClientSecret is a Tailscale OAuth client secret (tskey-client-…). When
+	// set, tsnet exchanges it for a short-lived auth key at startup rather than
+	// using a long-lived AuthKey — the modern way to authenticate headless
+	// nodes. OAuth-minted nodes must be tagged, so set Tags alongside it.
+	ClientSecret string
+
+	// Tags are the ACL tags advertised by the node (e.g. "tag:ci"). Required
+	// when authenticating via ClientSecret.
+	Tags []string
+
 	// ControlURL overrides the coordination server. Empty uses Tailscale's
 	// default (controlplane.tailscale.com); set this for Headscale or a
 	// self-hosted/regional control plane.
@@ -64,6 +74,11 @@ func NewTSNetDialer(cfg TSConfig) (*TSNetDialer, error) {
 		AuthKey:    cfg.AuthKey,
 		ControlURL: cfg.ControlURL,
 		Ephemeral:  cfg.Ephemeral,
+		// With an OAuth client secret set, tsnet mints a short-lived auth key
+		// itself (feature/oauthkey, linked by default). AdvertiseTags is the tag
+		// identity the minted key — and the node — registers under.
+		ClientSecret:  cfg.ClientSecret,
+		AdvertiseTags: cfg.Tags,
 	}
 	if cfg.AuthLog != nil {
 		// tsnet surfaces user-facing messages (notably the interactive login
