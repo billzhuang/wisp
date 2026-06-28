@@ -82,7 +82,7 @@ run_once() {
   step "unit+race"       go test -race ./...        || return 1
   step "build (pure Go)" go build ./...             || return 1
   if [ "$QUICK" -eq 0 ]; then
-    step "e2e (real binary)" go test -tags e2e -count=1 ./internal/e2e/ || return 1
+    step "e2e (real binary)" go test -tags e2e -count=1 ./internal/e2e/... || return 1
   else
     echo "    (skipping e2e: --quick)"
   fi

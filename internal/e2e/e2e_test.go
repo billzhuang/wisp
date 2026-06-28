@@ -274,10 +274,9 @@ func TestBinaryForwardsKeystrokes(t *testing.T) {
 // requests an exec channel instead of a shell, and the command's output renders.
 func TestBinaryRunsRemoteCommand(t *testing.T) {
 	const marker = "REMOTE-CMD-RAN"
-	s, srv := launch(t, func(stdin io.Reader, stdout io.Writer, cmd string, pty sshserver.PTYRequest) {
+	s, _ := launch(t, func(stdin io.Reader, stdout io.Writer, cmd string, pty sshserver.PTYRequest) {
 		fmt.Fprintf(stdout, "%s: %s\r\n", marker, cmd)
 	}, "-command", "echo hi")
-	_ = srv
 
 	s.write("\n") // password
 	out := s.waitFor(marker, 10*time.Second)
