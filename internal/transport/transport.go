@@ -1,8 +1,8 @@
-// Package transport abstracts how wisp reaches a remote host. The whole point
-// of the project is that connectivity comes from an embedded userspace Tailscale
-// node (tsnet) rather than a system Tailscale app or daemon — but the SSH layer
-// and the tests must not care which dialer they were handed. That seam is the
-// Dialer interface.
+// Package transport abstracts how wisp reaches hosts on the tailnet. The whole
+// point of the project is that connectivity comes from an embedded userspace
+// Tailscale node (tsnet) rather than a system Tailscale app or daemon — but the
+// egress proxy and the tests must not care which dialer they were handed. That
+// seam is the Dialer interface.
 package transport
 
 import (
@@ -10,10 +10,10 @@ import (
 	"net"
 )
 
-// Dialer establishes a raw transport connection to "host:port". The SSH client
-// is layered on top of whatever net.Conn this returns, so the same SSH code
-// works over a tsnet WireGuard tunnel, a plain TCP socket (tests), or anything
-// else that satisfies this interface.
+// Dialer establishes a raw transport connection to "host:port". The egress
+// proxy is layered on top of whatever net.Conn this returns, so the same proxy
+// code works over a tsnet WireGuard tunnel, a plain TCP socket (-no-tailnet and
+// tests), or anything else that satisfies this interface.
 type Dialer interface {
 	// Dial opens a connection to addr ("host:port"). The network is "tcp".
 	Dial(ctx context.Context, network, addr string) (net.Conn, error)

@@ -1,6 +1,9 @@
 // Command wisp is a Tailscale-native terminal: it embeds a userspace Tailscale
-// node (tsnet) and dials SSH hosts on the tailnet with no Tailscale app, daemon,
-// or system client installed. The terminal *is* the tailnet node.
+// node (tsnet) and runs a local shell whose network egress is routed through the
+// tailnet — with no Tailscale app, daemon, or system client installed, and
+// without touching the host's DNS or routing. Tools run in the shell (curl, git,
+// Claude Code, Codex, …) reach tailnet and subnet-router resources by way of an
+// embedded proxy whose address is injected into the shell's environment.
 //
 // The default build renders through the local OS terminal (stdio frontend);
 // build with `-tags ebiten` for the GPU window frontend and `-tags libghostty`
@@ -14,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"time"
@@ -21,14 +25,13 @@ import (
 	"github.com/billzhuang/wisp/internal/app"
 	"github.com/billzhuang/wisp/internal/banner"
 	"github.com/billzhuang/wisp/internal/config"
+	"github.com/billzhuang/wisp/internal/localpty"
+	"github.com/billzhuang/wisp/internal/proxy"
 	"github.com/billzhuang/wisp/internal/render"
-	"github.com/billzhuang/wisp/internal/sshx"
 	"github.com/billzhuang/wisp/internal/terminal"
 	"github.com/billzhuang/wisp/internal/transport"
 	"github.com/billzhuang/wisp/internal/update"
 	"github.com/billzhuang/wisp/internal/version"
-	"golang.org/x/crypto/ssh"
-	xterm "golang.org/x/term"
 )
 
 func main() {
@@ -49,9 +52,7 @@ func run(args []string) error {
 
 	// Reclaim any update artifacts (the previous ".old" binary, interrupted
 	// download temp files) left next to our executable, so repeated self-updates
-	// don't accumulate disk. Best-effort: never blocks or fails the launch. The
-	// scan is a couple of file ops on our own install dir — dwarfed by the tsnet
-	// bring-up and SSH dial that follow — so it stays on the synchronous path.
+	// don't accumulate disk. Best-effort: never blocks or fails the launch.
 	if n := (&update.Applier{Prefix: assetFlavor}).CleanupLeftovers(); n > 0 {
 		fmt.Fprintf(os.Stderr, "wisp: reclaimed %d leftover update file(s)\n", n)
 	}
@@ -59,7 +60,7 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Action flags that run without connecting.
+	// Action flags that run without starting a terminal.
 	if cfg.ShowVersion {
 		fmt.Printf("wisp %s (engine: %s)\n", version.Current(), terminal.Backend)
 		return nil
@@ -73,7 +74,7 @@ func run(args []string) error {
 	}
 
 	// ASCII splash (constant string — no measurable startup cost).
-	fmt.Fprint(os.Stderr, banner.Render(version.Current(), "connecting to "+cfg.Addr()+" …"))
+	fmt.Fprint(os.Stderr, banner.Render(version.Current(), "starting tailnet node …"))
 
 	var pendingUpdate *update.Release
 	if !cfg.NoUpdateCheck {
@@ -90,34 +91,20 @@ func run(args []string) error {
 	}
 	defer dialer.Close()
 
-	hostKey, err := buildHostKey(cfg)
+	// Start the embedded egress proxy: connections it accepts are dialed through
+	// the tailnet node. The shell reaches tailnet resources by pointing its
+	// proxy env vars here.
+	px, err := proxy.Start(cfg.ProxyAddr, dialer)
 	if err != nil {
-		return err
+		return fmt.Errorf("starting tailnet proxy: %w", err)
 	}
+	defer px.Close()
 
-	auth, err := buildAuth(cfg)
-	if err != nil {
-		return err
-	}
+	childEnv := proxyEnv(os.Environ(), px.Addr())
 
-	sshCfg := sshx.Config{
-		Addr:    cfg.Addr(),
-		User:    cfg.User,
-		Auth:    auth,
-		HostKey: hostKey,
-	}
-
-	ctrl, err := app.Dial(ctx, dialer, sshCfg)
-	if err != nil {
-		return err
-	}
+	ctrl := app.NewLocal(shellConfig(cfg, childEnv))
 	defer ctrl.Close()
-
-	if cfg.Command != "" {
-		if err := ctrl.StartCommand(cfg.Command); err != nil {
-			return err
-		}
-	} else if err := ctrl.Start(); err != nil {
+	if err := ctrl.Start(); err != nil {
 		return err
 	}
 
@@ -125,18 +112,13 @@ func run(args []string) error {
 	frontend := render.NewDefault()
 
 	// A tab-capable frontend (the GUI) drives several concurrent sessions as
-	// tabs. Wrap the initial session plus an opener that re-dials the same host
-	// into a tab manager; every other frontend keeps the single session. New
-	// tabs reuse the launch credentials — a key signer is reused silently, while
-	// password auth would re-prompt on the controlling terminal — and run an
-	// interactive shell.
+	// tabs. Wrap the initial session plus an opener that spawns another local
+	// shell (sharing the same node + proxy) into a tab manager; every other
+	// frontend keeps the single session.
 	var rctrl render.Controller = ctrl
 	if tc, ok := frontend.(render.TabCapable); ok && tc.SupportsTabs() {
 		open := func() (render.Controller, terminal.Engine, func() error, error) {
-			c, err := app.Dial(ctx, dialer, sshCfg)
-			if err != nil {
-				return nil, nil, nil, err
-			}
+			c := app.NewLocal(shellConfig(cfg, childEnv))
 			if err := c.Start(); err != nil {
 				c.Close()
 				return nil, nil, nil, err
@@ -150,8 +132,7 @@ func run(args []string) error {
 	}
 
 	// If a newer release is pending and the frontend can show an in-app prompt
-	// (the GUI), wire the click-to-install action — this is the Ghostty-style
-	// "update available, click to install" affordance.
+	// (the GUI), wire the click-to-install action.
 	if pendingUpdate != nil {
 		if p, ok := frontend.(render.UpdatePrompter); ok {
 			rel := pendingUpdate
@@ -160,12 +141,14 @@ func run(args []string) error {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "wisp: connected to %s (engine: %s)\n", cfg.Addr(), terminal.Backend)
+	fmt.Fprintf(os.Stderr, "wisp: tailnet proxy on %s (engine: %s)\n", px.Addr(), terminal.Backend)
 	return frontend.Run(ctx, rctrl, eng)
 }
 
+// buildDialer returns the transport the proxy dials through: the embedded tsnet
+// node by default, or the OS network stack under -no-tailnet.
 func buildDialer(ctx context.Context, cfg *config.Config) (transport.Dialer, error) {
-	if cfg.Direct {
+	if cfg.NoTailnet {
 		return transport.NewNetDialer(), nil
 	}
 	d, err := transport.NewTSNetDialer(transport.TSConfig{
@@ -181,8 +164,8 @@ func buildDialer(ctx context.Context, cfg *config.Config) (transport.Dialer, err
 	if err != nil {
 		return nil, err
 	}
-	// Bring the node online before connecting so auth/login state surfaces
-	// clearly rather than as an opaque dial timeout.
+	// Bring the node online before serving so auth/login state surfaces clearly
+	// rather than as an opaque proxy-dial timeout later.
 	if err := d.Up(ctx); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("bringing up tsnet node: %w", err)
@@ -190,34 +173,54 @@ func buildDialer(ctx context.Context, cfg *config.Config) (transport.Dialer, err
 	return d, nil
 }
 
-func buildHostKey(cfg *config.Config) (ssh.HostKeyCallback, error) {
-	if cfg.InsecureHostKey {
-		fmt.Fprintln(os.Stderr, "wisp: WARNING host-key verification disabled")
-		return sshx.InsecureIgnoreHostKey(), nil
+// shellConfig builds the localpty config for the shell wisp launches, under the
+// given (proxy-augmented) environment.
+func shellConfig(cfg *config.Config, env []string) localpty.Config {
+	shell := cfg.ResolveShell(os.Getenv)
+	lc := localpty.Config{
+		Path: shell,
+		Env:  env,
+		Term: "xterm-256color",
+		Cols: 80, Rows: 24,
 	}
-	// Trust on first use: record unknown hosts, reject changed keys.
-	return sshx.KnownHostsCallback(cfg.KnownHosts, true)
+	if cfg.Command != "" {
+		lc.Args = []string{shell, "-c", cfg.Command}
+	} else {
+		// argv[0] of "-<base>" requests a login shell, so the user's profile is
+		// sourced (PATH, etc.) just as a normal terminal login would.
+		lc.Args = []string{"-" + filepath.Base(shell)}
+	}
+	return lc
 }
 
-func buildAuth(cfg *config.Config) ([]ssh.AuthMethod, error) {
-	if cfg.IdentityFile != "" {
-		key, err := os.ReadFile(cfg.IdentityFile)
-		if err != nil {
-			return nil, fmt.Errorf("reading identity file: %w", err)
-		}
-		signer, err := ssh.ParsePrivateKey(key)
-		if err != nil {
-			return nil, fmt.Errorf("parsing identity file: %w", err)
-		}
-		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
+// proxyEnv returns base with the standard proxy environment variables pointed at
+// the embedded proxy (overriding any inherited values), plus a WISP marker so a
+// shell prompt or script can tell it is running inside wisp.
+func proxyEnv(base []string, addr string) []string {
+	httpURL := "http://" + addr
+	socksURL := "socks5h://" + addr
+	out := append([]string(nil), base...)
+	for _, kv := range [][2]string{
+		{"HTTP_PROXY", httpURL}, {"http_proxy", httpURL},
+		{"HTTPS_PROXY", httpURL}, {"https_proxy", httpURL},
+		{"ALL_PROXY", socksURL}, {"all_proxy", socksURL},
+		{"WISP", "1"},
+	} {
+		out = setEnv(out, kv[0], kv[1])
 	}
-	// Interactive password.
-	return []ssh.AuthMethod{ssh.PasswordCallback(func() (string, error) {
-		fmt.Fprintf(os.Stderr, "%s@%s password: ", cfg.User, cfg.Host)
-		pw, err := xterm.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
-		return string(pw), err
-	})}, nil
+	return out
+}
+
+// setEnv replaces KEY=… in env if present, otherwise appends it.
+func setEnv(env []string, key, val string) []string {
+	prefix := key + "="
+	for i, kv := range env {
+		if len(kv) >= len(prefix) && kv[:len(prefix)] == prefix {
+			env[i] = prefix + val
+			return env
+		}
+	}
+	return append(env, prefix+val)
 }
 
 // runUpdate performs the click-to-install flow (here, the CLI form): check for a

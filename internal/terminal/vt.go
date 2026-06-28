@@ -13,7 +13,7 @@ import (
 // forms). It is deliberately renderer-agnostic and fully deterministic so the
 // rest of wisp can be built and tested without cgo or libghostty.
 //
-// It is safe for concurrent Write (from the SSH read pump) and Snapshot/Cursor
+// It is safe for concurrent Write (from the shell read pump) and Snapshot/Cursor
 // (from a render loop): all state is guarded by mu.
 type vtEngine struct {
 	mu sync.Mutex

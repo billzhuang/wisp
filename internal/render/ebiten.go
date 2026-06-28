@@ -2,7 +2,7 @@
 
 // This file is the Ebitengine GPU frontend, compiled only with `-tags ebiten`.
 // It draws the terminal.Engine cell grid to a window and forwards keyboard
-// input to the remote. Building it requires the platform GPU/windowing
+// input to the shell. Building it requires the platform GPU/windowing
 // toolchain (on Linux: libgl1-mesa-dev, libxrandr-dev, libxcursor-dev,
 // libxinerama-dev, libxi-dev; macOS: the system frameworks), which is why it is
 // kept behind a tag and the default build uses the stdio frontend instead.
@@ -51,7 +51,7 @@ type ebitenFrontend struct {
 	banner   string       // update notice; empty hides the banner
 	install  func() error // click-to-install action
 	updating bool         // an install is in flight
-	loading  bool         // true until the first remote byte arrives
+	loading  bool         // true until the first shell byte arrives
 }
 
 // SetUpdate implements render.UpdatePrompter: it shows a top banner offering
@@ -68,14 +68,14 @@ func (f *ebitenFrontend) Run(ctx context.Context, ctrl Controller, eng terminal.
 	f.eng = eng
 	f.face = text.NewGoXFace(basicfont.Face7x13)
 	f.cols, f.rows = eng.Size()
-	f.loading = true // show the splash until the first remote byte
+	f.loading = true // show the splash until the first shell byte
 
 	if tc, ok := ctrl.(TabController); ok {
 		// In tab mode the controller owns a pump per tab; we only snapshot the
 		// active tab's engine, and loading state comes from that tab.
 		f.tabs = tc
 	} else {
-		// Single-session fallback: pump remote output into the one engine.
+		// Single-session fallback: pump shell output into the one engine.
 		go func() {
 			buf := make([]byte, 32*1024)
 			r := ctrl.Stdout()
@@ -112,18 +112,18 @@ func (f *ebitenFrontend) stripW() int {
 	return 0
 }
 
-// Update forwards input and propagates window resizes to the engine + remote.
+// Update forwards input and propagates window resizes to the engine + shell.
 func (f *ebitenFrontend) Update() error {
 	ctrlDown := ebiten.IsKeyPressed(ebiten.KeyControlLeft) || ebiten.IsKeyPressed(ebiten.KeyControlRight)
 
 	// Ctrl+U installs a pending update (the click-to-install gesture).
 	if ctrlDown && inpututil.IsKeyJustPressed(ebiten.KeyU) {
 		f.triggerInstall()
-		return nil // swallow the chord; don't forward ^U to the remote
+		return nil // swallow the chord; don't forward ^U to the shell
 	}
 
 	// Tab-management chords (multi-tab GUI only). Each is swallowed so it never
-	// reaches the remote; note they shadow the remote's own Ctrl+T/Ctrl+W.
+	// reaches the shell; note they shadow the shell's own Ctrl+T/Ctrl+W.
 	if f.tabs != nil && ctrlDown {
 		shift := ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight)
 		switch {
@@ -207,8 +207,8 @@ func (f *ebitenFrontend) triggerInstall() {
 	}()
 }
 
-// openTab dials a new tab off the UI loop so the window keeps rendering during
-// the SSH handshake; a failure surfaces in the banner.
+// openTab opens a new tab off the UI loop so the window keeps rendering while
+// the shell starts; a failure surfaces in the banner.
 func (f *ebitenFrontend) openTab() {
 	go func() {
 		if err := f.tabs.NewTab(); err != nil {
@@ -358,7 +358,7 @@ func (f *ebitenFrontend) Layout(outsideW, outsideH int) (int, int) {
 	if cols != f.cols || rows != f.rows {
 		f.cols, f.rows = cols, rows
 		if f.tabs != nil {
-			// The TabController resizes every tab's engine and remote PTY.
+			// The TabController resizes every tab's engine and shell PTY.
 			f.ctrl.Resize(cols, rows)
 		} else {
 			f.eng.Resize(cols, rows)

@@ -10,54 +10,41 @@ import (
 )
 
 // TestLiveTailnet is the only test that exercises wisp's reason for existing:
-// the embedded userspace Tailscale node (tsnet) coming up and dialing a real
-// host over the tailnet — the exact path the hermetic localhost tests skip with
-// -direct. It cannot be hermetic (it needs a tailnet + a reachable host), so it
-// is opt-in: it runs only when the environment supplies credentials, and skips
-// cleanly otherwise. In CI those come from GitHub Action secrets; locally,
-// export them before `go test -tags e2e`.
+// the embedded userspace Tailscale node (tsnet) coming up and a program in the
+// local shell reaching a real tailnet resource *through the embedded egress
+// proxy* — the exact path the hermetic tests skip with -no-tailnet. It cannot be
+// hermetic (it needs a tailnet + a reachable HTTP resource), so it is opt-in: it
+// runs only when the environment supplies credentials, and skips cleanly
+// otherwise. In CI those come from GitHub Action secrets; locally, export them
+// before `go test -tags e2e`.
 //
 // Authentication uses a Tailscale OAuth client secret, not a long-lived auth
 // key. wisp's tsnet exchanges the secret for a short-lived, tagged auth key at
 // startup (see internal/transport/tsnet.go), so nothing durable is stored — the
-// OAuth client is scoped to a tag and revocable from the admin console, which is
-// the modern recommended way to authenticate headless nodes.
+// OAuth client is scoped to a tag and revocable from the admin console.
 //
 // Required env:
 //
 //	WISP_E2E_TS_CLIENT_SECRET   OAuth client secret (tskey-client-…), auth_keys scope
 //	WISP_E2E_TS_TAGS            comma-separated ACL tags the client owns (e.g. tag:ci)
-//	WISP_E2E_HOST               destination host on the tailnet (host or host:port)
-//	WISP_E2E_USER               remote login user
-//
-// One SSH auth method, in precedence order:
-//
-//	WISP_E2E_SSH_KEY            path to a private key for public-key auth (preferred), or
-//	WISP_E2E_PASSWORD           password, typed into the interactive prompt over the PTY
+//	WISP_E2E_URL                an HTTP URL reachable only over the tailnet
+//	WISP_E2E_EXPECT             a substring expected in that URL's response body
 //
 // Optional env:
 //
 //	WISP_E2E_CONTROL_URL        coordination server (Headscale/self-hosted control plane)
 //
-// The test runs a single remote command via -command and asserts a unique token
-// round-trips back through tsnet -> SSH -> engine -> frontend to the terminal.
+// The test runs `curl` in the shell, pointed at the URL through the proxy env
+// vars wisp injects, and asserts the expected token round-trips back through
+// proxy -> tsnet -> tailnet -> engine -> frontend to the terminal.
 func TestLiveTailnet(t *testing.T) {
 	clientSecret := os.Getenv("WISP_E2E_TS_CLIENT_SECRET")
 	tags := os.Getenv("WISP_E2E_TS_TAGS")
-	host := os.Getenv("WISP_E2E_HOST")
-	user := os.Getenv("WISP_E2E_USER")
-	if clientSecret == "" || tags == "" || host == "" || user == "" {
-		t.Skip("live tailnet test skipped: set WISP_E2E_TS_CLIENT_SECRET, WISP_E2E_TS_TAGS, WISP_E2E_HOST, WISP_E2E_USER to enable")
+	url := os.Getenv("WISP_E2E_URL")
+	expect := os.Getenv("WISP_E2E_EXPECT")
+	if clientSecret == "" || tags == "" || url == "" || expect == "" {
+		t.Skip("live tailnet test skipped: set WISP_E2E_TS_CLIENT_SECRET, WISP_E2E_TS_TAGS, WISP_E2E_URL, WISP_E2E_EXPECT to enable")
 	}
-
-	keyFile := os.Getenv("WISP_E2E_SSH_KEY")
-	password := os.Getenv("WISP_E2E_PASSWORD")
-	if keyFile == "" && password == "" {
-		t.Fatal("live tailnet test enabled but no SSH auth provided: set WISP_E2E_SSH_KEY or WISP_E2E_PASSWORD")
-	}
-
-	// A unique token so we match the command's *output*, not the command echo.
-	token := "WISP-LIVE-" + time.Now().Format("20060102-150405.000000")
 
 	stateDir, err := os.MkdirTemp("", "wisp-e2e-tsnet")
 	if err != nil {
@@ -65,7 +52,9 @@ func TestLiveTailnet(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(stateDir) })
 
-	knownHosts := stateDir + "/known_hosts" // trust-on-first-use into a throwaway file
+	// curl honors $ALL_PROXY / $HTTP_PROXY, which wisp injects pointing at the
+	// embedded proxy; --max-time keeps a misconfigured run from hanging the test.
+	cmd := "curl -sS --max-time 60 " + shellQuote(url) + " || echo WISP-CURL-FAILED"
 
 	args := []string{
 		"-no-update-check",
@@ -73,32 +62,26 @@ func TestLiveTailnet(t *testing.T) {
 		"-hostname", "wisp-e2e",
 		"-state-dir", stateDir,
 		"-tags", tags, // OAuth-minted nodes must be tagged
-		"-known-hosts", knownHosts,
-		"-host", host,
-		"-user", user,
-		"-command", "echo " + token,
+		"-command", cmd,
 	}
 	if cu := os.Getenv("WISP_E2E_CONTROL_URL"); cu != "" {
 		args = append(args, "-control-url", cu)
 	}
-	if keyFile != "" {
-		args = append(args, "-i", keyFile)
-	}
 
 	// Pass the OAuth secret via the environment (TS_CLIENT_SECRET), not argv, so
-	// it never appears in a process listing. wisp reads it as -client-secret's
-	// default.
+	// it never appears in a process listing.
 	s := startWisp(t, []string{"TS_CLIENT_SECRET=" + clientSecret}, args...)
-
-	if keyFile == "" && password != "" {
-		// The interactive prompt reads one line from the PTY.
-		s.write(password + "\n")
-	}
 
 	// tsnet bring-up (OAuth key mint + tailnet dial) is slower than a localhost
 	// connection; allow generous headroom before declaring failure.
-	out := s.waitFor(token, 120*time.Second)
-	if !strings.Contains(out, token) {
-		t.Fatalf("expected live remote output to contain %q; got:\n%s", token, sanitize(out))
+	out := s.waitFor(expect, 120*time.Second)
+	if !strings.Contains(out, expect) {
+		t.Fatalf("expected live tailnet response to contain %q; got:\n%s", expect, sanitize(out))
 	}
+}
+
+// shellQuote wraps s in single quotes for safe use in `sh -c`, escaping any
+// embedded single quotes.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

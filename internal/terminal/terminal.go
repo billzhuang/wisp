@@ -1,6 +1,6 @@
 // Package terminal defines the terminal engine seam used by wisp.
 //
-// The Engine interface is the boundary between "bytes arriving from the remote
+// The Engine interface is the boundary between "bytes arriving from the shell's
 // PTY" and "a grid of cells a renderer can draw". The default implementation
 // (vtEngine, see vt.go) is a pure-Go VT parser so the whole pipeline is
 // buildable and testable without cgo. The libghostty-backed engine lives in
@@ -10,14 +10,14 @@ package terminal
 
 import "image/color"
 
-// Engine is a terminal emulator: it consumes a byte stream produced by a remote
+// Engine is a terminal emulator: it consumes a byte stream produced by a
 // program (escape sequences + text) and maintains a cell grid that a renderer
 // can read each frame.
 //
 // Engine is an io.Writer so a session's stdout can be copied straight into it
 // with io.Copy.
 type Engine interface {
-	// Write feeds bytes from the remote PTY into the parser. It never returns
+	// Write feeds bytes from the shell's PTY into the parser. It never returns
 	// a short write or error for well-formed terminal output; partial escape
 	// sequences are buffered until completed by a later Write.
 	Write(p []byte) (int, error)

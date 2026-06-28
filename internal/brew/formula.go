@@ -37,7 +37,7 @@ const binaryName = "wisp_darwin_arm64"
 // contents of Formula/wisp.rb.
 func Formula(p Params) string {
 	return fmt.Sprintf(`class Wisp < Formula
-  desc "Tailscale-native terminal: SSH over an embedded tsnet node, no daemon"
+  desc "Tailscale-native terminal: local shell with embedded tsnet egress, no daemon"
   homepage "https://github.com/billzhuang/wisp"
   version "%s"
   url "%s"

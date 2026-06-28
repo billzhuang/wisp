@@ -8,80 +8,30 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Addr edge cases
-// ---------------------------------------------------------------------------
-
-func TestAddrBareHostAppends22(t *testing.T) {
-	c := &Config{Host: "myhost"}
-	if got := c.Addr(); got != "myhost:22" {
-		t.Errorf("Addr() = %q, want myhost:22", got)
-	}
-}
-
-// A host value that contains a colon (e.g. an IPv6 literal or explicit port)
-// must be returned as-is.
-func TestAddrHostWithColonIsUnchanged(t *testing.T) {
-	cases := []string{
-		"host:8022",
-		"[::1]:22",
-		"192.168.1.1:2222",
-	}
-	for _, h := range cases {
-		c := &Config{Host: h}
-		if got := c.Addr(); got != h {
-			t.Errorf("Addr() for %q = %q, want unchanged", h, got)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Validate — user field
-// ---------------------------------------------------------------------------
-
-func TestValidateRequiresUser(t *testing.T) {
-	c := &Config{Host: "h", Direct: true, InsecureHostKey: true}
-	// User is empty — must fail.
-	if err := c.Validate(); err == nil {
-		t.Fatal("expected error for missing -user")
-	}
-}
-
-func TestValidateRequiresUserErrorMessage(t *testing.T) {
-	c := &Config{Host: "h", Direct: true, InsecureHostKey: true}
-	err := c.Validate()
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "user") {
-		t.Errorf("error = %q, expected mention of 'user'", err.Error())
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Validate — tsnet fields
 // ---------------------------------------------------------------------------
 
 func TestValidateTSNetMissingHostname(t *testing.T) {
-	// Direct=false but Hostname empty (StateDir present).
-	c := &Config{Host: "h", User: "u", StateDir: "/s", KnownHosts: "/kh"}
+	// NoTailnet=false but Hostname empty (StateDir present).
+	c := &Config{StateDir: "/s"}
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected error for missing tsnet hostname")
 	}
 }
 
 func TestValidateTSNetMissingStateDir(t *testing.T) {
-	// Direct=false but StateDir empty (Hostname present).
-	c := &Config{Host: "h", User: "u", Hostname: "n", KnownHosts: "/kh"}
+	// NoTailnet=false but StateDir empty (Hostname present).
+	c := &Config{Hostname: "n"}
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected error for missing tsnet state-dir")
 	}
 }
 
-func TestValidateDirectModeBypasesHostnameStateDir(t *testing.T) {
-	// -direct: hostname and state-dir must not be required.
-	c := &Config{Host: "h", User: "u", Direct: true, InsecureHostKey: true}
+func TestValidateNoTailnetBypassesHostnameStateDir(t *testing.T) {
+	// -no-tailnet: hostname and state-dir must not be required.
+	c := &Config{NoTailnet: true}
 	if err := c.Validate(); err != nil {
-		t.Fatalf("direct mode should not need tsnet fields: %v", err)
+		t.Fatalf("no-tailnet mode should not need tsnet fields: %v", err)
 	}
 }
 
@@ -129,23 +79,13 @@ func TestParseEphemeralFlag(t *testing.T) {
 	}
 }
 
-func TestParseDirectFlag(t *testing.T) {
-	c, err := Parse([]string{"-direct"}, env(nil))
+func TestParseNoTailnetFlag(t *testing.T) {
+	c, err := Parse([]string{"-no-tailnet"}, env(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.Direct {
-		t.Error("Direct should be true after -direct flag")
-	}
-}
-
-func TestParseInsecureHostKeyFlag(t *testing.T) {
-	c, err := Parse([]string{"-insecure-host-key"}, env(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !c.InsecureHostKey {
-		t.Error("InsecureHostKey should be true after -insecure-host-key flag")
+	if !c.NoTailnet {
+		t.Error("NoTailnet should be true after -no-tailnet flag")
 	}
 }
 
@@ -163,13 +103,23 @@ func TestParseCommandFlag(t *testing.T) {
 	}
 }
 
-func TestParseIdentityFileFlag(t *testing.T) {
-	c, err := Parse([]string{"-i", "/home/user/.ssh/id_ed25519"}, env(nil))
+func TestParseShellFlag(t *testing.T) {
+	c, err := Parse([]string{"-shell", "/bin/zsh"}, env(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.IdentityFile != "/home/user/.ssh/id_ed25519" {
-		t.Errorf("IdentityFile = %q", c.IdentityFile)
+	if c.Shell != "/bin/zsh" {
+		t.Errorf("Shell = %q, want /bin/zsh", c.Shell)
+	}
+}
+
+func TestParseProxyAddrFlag(t *testing.T) {
+	c, err := Parse([]string{"-proxy-addr", "127.0.0.1:9999"}, env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ProxyAddr != "127.0.0.1:9999" {
+		t.Errorf("ProxyAddr = %q, want 127.0.0.1:9999", c.ProxyAddr)
 	}
 }
 
@@ -194,16 +144,6 @@ func TestParseHostnameDefault(t *testing.T) {
 	}
 }
 
-func TestParseKnownHostsFlag(t *testing.T) {
-	c, err := Parse([]string{"-known-hosts", "/etc/wisp/known_hosts"}, env(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.KnownHosts != "/etc/wisp/known_hosts" {
-		t.Errorf("KnownHosts = %q", c.KnownHosts)
-	}
-}
-
 func TestParseStateDirFlag(t *testing.T) {
 	c, err := Parse([]string{"-state-dir", "/var/lib/wisp"}, env(nil))
 	if err != nil {
@@ -219,16 +159,13 @@ func TestParseStateDirFlag(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStateDirEmptyWhenNoHome(t *testing.T) {
-	// When HOME is absent, the computed defaults should be empty strings.
+	// When HOME is absent, the computed default should be an empty string.
 	c, err := Parse([]string{}, env(map[string]string{"HOME": ""}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.StateDir != "" {
 		t.Errorf("StateDir = %q, want empty when HOME is unset", c.StateDir)
-	}
-	if c.KnownHosts != "" {
-		t.Errorf("KnownHosts = %q, want empty when HOME is unset", c.KnownHosts)
 	}
 }
 
@@ -244,19 +181,8 @@ func TestParseUnknownFlagReturnsError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Config field defaults
+// Parse — tsnet flags
 // ---------------------------------------------------------------------------
-
-func TestParseUserFromFlag(t *testing.T) {
-	// -user flag overrides USER env.
-	c, err := Parse([]string{"-user", "bob"}, env(map[string]string{"USER": "alice"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.User != "bob" {
-		t.Errorf("User = %q, want bob", c.User)
-	}
-}
 
 func TestParseControlURLFromFlag(t *testing.T) {
 	c, err := Parse([]string{"-control-url", "https://headscale.example.com"}, env(nil))
@@ -268,45 +194,29 @@ func TestParseControlURLFromFlag(t *testing.T) {
 	}
 }
 
-func TestParseHostFlag(t *testing.T) {
-	c, err := Parse([]string{"-host", "dev.example"}, env(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Host != "dev.example" {
-		t.Errorf("Host = %q, want dev.example", c.Host)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Validate — successful path
 // ---------------------------------------------------------------------------
 
 func TestValidateSuccessWithAllRequiredFields(t *testing.T) {
 	c := &Config{
-		Host:       "myhost",
-		User:       "alice",
-		Hostname:   "wisp-node",
-		StateDir:   "/tmp/state",
-		KnownHosts: "/tmp/known_hosts",
+		Hostname: "wisp-node",
+		StateDir: "/tmp/state",
 	}
 	if err := c.Validate(); err != nil {
 		t.Errorf("Validate() failed for valid config: %v", err)
 	}
 }
 
-// Validate that all individual required-field errors mention the flag name.
+// Validate that the tsnet required-field errors mention the flag name.
 func TestValidateErrorsMentionFlagNames(t *testing.T) {
 	cases := []struct {
 		name    string
 		cfg     Config
 		keyword string
 	}{
-		{"missing host", Config{User: "u", Direct: true, InsecureHostKey: true}, "host"},
-		{"missing user", Config{Host: "h", Direct: true, InsecureHostKey: true}, "user"},
-		{"missing hostname", Config{Host: "h", User: "u", StateDir: "/s", KnownHosts: "/k"}, "hostname"},
-		{"missing state-dir", Config{Host: "h", User: "u", Hostname: "n", KnownHosts: "/k"}, "state-dir"},
-		{"missing known-hosts", Config{Host: "h", User: "u", Direct: true}, "known-hosts"},
+		{"missing hostname", Config{StateDir: "/s"}, "hostname"},
+		{"missing state-dir", Config{Hostname: "n"}, "state-dir"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
