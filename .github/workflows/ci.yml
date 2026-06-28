@@ -9,14 +9,18 @@ on:
     branches: [main]
   pull_request:
 
-# Cancel superseded runs to speed up feedback and save runner minutes (the
-# macOS job is the expensive one). Scoped per ref, so each PR cancels only its
-# own in-flight run when a new commit is pushed. cancel-in-progress is gated to
-# pull_request events so pushes to main are never cancelled — every main commit
-# keeps a complete CI record. (Module and build caches are already handled:
-# actions/setup-go caches them by default, keyed on go.sum.)
+# Cancel superseded PR runs to speed up feedback and save runner minutes (the
+# macOS job is the expensive one). PR runs are grouped per PR number, so a new
+# commit cancels that PR's older run. Non-PR events (pushes to main) have no PR
+# number and fall back to a unique per-run id, putting each run in its own group
+# — so main commits are never cancelled or dropped, not even a run left pending
+# behind an in-progress one (a shared group caps a group at one running + one
+# pending run, cancelling older pending runs even when cancel-in-progress is
+# false). cancel-in-progress is additionally gated to pull_request events.
+# (Module and build caches are already handled: actions/setup-go caches them by
+# default, keyed on go.sum.)
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
