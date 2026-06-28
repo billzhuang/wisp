@@ -12,6 +12,7 @@
 package brew
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strings"
 )
@@ -64,7 +65,16 @@ func SHA256For(checksums, asset string) (string, error) {
 			continue
 		}
 		if strings.TrimPrefix(fields[1], "*") == asset {
-			return strings.ToLower(fields[0]), nil
+			// Fail fast on a truncated or non-hex digest rather than letting a
+			// bogus value land in the committed formula.
+			sha := strings.ToLower(fields[0])
+			if len(sha) != 64 {
+				return "", fmt.Errorf("brew: %q checksum is not a 64-char SHA-256: %q", asset, fields[0])
+			}
+			if _, err := hex.DecodeString(sha); err != nil {
+				return "", fmt.Errorf("brew: %q checksum is not hex: %q", asset, fields[0])
+			}
+			return sha, nil
 		}
 	}
 	return "", fmt.Errorf("brew: no checksum entry for %q", asset)

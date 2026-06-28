@@ -75,12 +75,13 @@ func run(args []string) error {
 }
 
 // validate rejects field values that can't sit safely inside a double-quoted
-// Ruby string in the rendered formula.
+// Ruby string in the rendered formula: a quote or newline would break out of
+// the literal, a backslash starts an escape, and "#{" begins interpolation.
 func validate(p brew.Params) error {
 	for _, f := range []struct{ name, val string }{
 		{"version", p.Version}, {"url", p.URL}, {"sha", p.SHA256},
 	} {
-		if strings.ContainsAny(f.val, "\"\n\r\t") {
+		if strings.ContainsAny(f.val, "\"\\\n\r\t") || strings.Contains(f.val, "#{") {
 			return fmt.Errorf("%s contains an illegal character: %q", f.name, f.val)
 		}
 	}
