@@ -7,6 +7,7 @@ import (
 	"net"
 	"time"
 
+	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 )
 
@@ -95,9 +96,29 @@ func NewTSNetDialer(cfg TSConfig) (*TSNetDialer, error) {
 // Up brings the node online and blocks until it has a usable netmap or ctx is
 // done. It is optional — Dial starts the node lazily — but calling it lets the
 // caller surface auth/login state before attempting a connection.
+//
+// Once up, it enables accept-routes so the node uses subnets advertised by
+// subnet routers. tsnet leaves RouteAll (the --accept-routes equivalent) off by
+// default, which would strip subnet routes from the netmap and make anything
+// reachable only *through* a subnet router unreachable. wisp turns it on so the
+// terminal delivers on its promise of reaching "tailnet and subnet-router
+// resources", not just direct tailnet nodes. MagicDNS (CorpDNS) is already on by
+// tsnet's default, so only routes need flipping.
 func (t *TSNetDialer) Up(ctx context.Context) error {
-	_, err := t.srv.Up(ctx)
-	return err
+	if _, err := t.srv.Up(ctx); err != nil {
+		return err
+	}
+	lc, err := t.srv.LocalClient()
+	if err != nil {
+		return fmt.Errorf("transport: local client: %w", err)
+	}
+	if _, err := lc.EditPrefs(ctx, &ipn.MaskedPrefs{
+		Prefs:       ipn.Prefs{RouteAll: true},
+		RouteAllSet: true,
+	}); err != nil {
+		return fmt.Errorf("transport: enabling accept-routes: %w", err)
+	}
+	return nil
 }
 
 // Dial implements Dialer over the tsnet node. MagicDNS names (e.g. "dev-box:22")
