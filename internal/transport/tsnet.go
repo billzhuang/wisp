@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
 
+	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 )
 
@@ -57,6 +59,11 @@ type TSConfig struct {
 // dependencies.
 type TSNetDialer struct {
 	srv *tsnet.Server
+
+	// prefsMu guards the one-time accept-routes edit so it lands exactly once
+	// whether the node is brought up via Up or lazily via Dial.
+	prefsMu   sync.Mutex
+	prefsDone bool
 }
 
 // NewTSNetDialer constructs (but does not yet start) the embedded node. Call Up
@@ -92,12 +99,51 @@ func NewTSNetDialer(cfg TSConfig) (*TSNetDialer, error) {
 	return &TSNetDialer{srv: srv}, nil
 }
 
+// enableAcceptRoutes turns on RouteAll (the --accept-routes equivalent) exactly
+// once. tsnet leaves it off by default, which strips subnet routes from the
+// netmap and makes anything reachable only *through* a subnet router
+// unreachable; wisp turns it on so the terminal delivers on its promise of
+// reaching "tailnet and subnet-router resources", not just direct tailnet nodes.
+// MagicDNS (CorpDNS) is already on by tsnet's default, so only routes need
+// flipping.
+//
+// LocalClient starts the backend if it hasn't been already, so this runs before
+// the node finishes coming up: the pref is in place for the first reconfigure
+// rather than landing in a second one a moment later. It is called from both Up
+// and Dial so the routes are enabled regardless of which one starts the node.
+func (t *TSNetDialer) enableAcceptRoutes(ctx context.Context) error {
+	t.prefsMu.Lock()
+	defer t.prefsMu.Unlock()
+	if t.prefsDone {
+		return nil
+	}
+	lc, err := t.srv.LocalClient()
+	if err != nil {
+		return fmt.Errorf("transport: local client: %w", err)
+	}
+	if _, err := lc.EditPrefs(ctx, &ipn.MaskedPrefs{
+		Prefs:       ipn.Prefs{RouteAll: true},
+		RouteAllSet: true,
+	}); err != nil {
+		return fmt.Errorf("transport: enabling accept-routes: %w", err)
+	}
+	t.prefsDone = true
+	return nil
+}
+
 // Up brings the node online and blocks until it has a usable netmap or ctx is
 // done. It is optional — Dial starts the node lazily — but calling it lets the
-// caller surface auth/login state before attempting a connection.
+// caller surface auth/login state before attempting a connection. Accept-routes
+// is enabled (see enableAcceptRoutes) before bring-up so subnet routes are
+// present from the node's first reconfigure.
 func (t *TSNetDialer) Up(ctx context.Context) error {
-	_, err := t.srv.Up(ctx)
-	return err
+	if err := t.enableAcceptRoutes(ctx); err != nil {
+		return err
+	}
+	if _, err := t.srv.Up(ctx); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Dial implements Dialer over the tsnet node. MagicDNS names (e.g. "dev-box:22")
@@ -108,6 +154,11 @@ func (t *TSNetDialer) Dial(ctx context.Context, network, addr string) (net.Conn,
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
+	}
+	// Enable accept-routes even when Dial starts the node lazily (Up was never
+	// called), so subnet-router destinations are reachable on the first dial.
+	if err := t.enableAcceptRoutes(ctx); err != nil {
+		return nil, err
 	}
 	return t.srv.Dial(ctx, network, addr)
 }
